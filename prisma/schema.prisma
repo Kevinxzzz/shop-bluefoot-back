@@ -2,8 +2,9 @@
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
 generator client {
-  provider = "prisma-client-js"
-  output   = "../src/generated/prisma"
+  provider   = "prisma-client-js"
+  output     = "../src/generated/prisma"
+  engineType = "library"
 }
 
 datasource db {
@@ -52,11 +53,11 @@ model UserRole {
 }
 
 model User {
-  id          String @id @default(uuid())
+  id          String  @id @default(uuid())
   name        String
-  email       String @unique
+  email       String  @unique
   password    String
-  contactLink String @unique @map("link_contact")
+  contactLink String? @unique @map("link_contact")
 
   roleId String   @map("role_id")
   role   UserRole @relation(fields: [roleId], references: [id])
