@@ -12,7 +12,7 @@ const handler = () => {
 
 export const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
-  max: 5, // Limite de 5 tentativas por IP
+  max: 10, // Limite de 10 tentativas por IP
   handler,
 });
 
