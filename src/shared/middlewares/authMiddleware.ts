@@ -40,7 +40,9 @@ export async function authMiddleware(
 
   try {
     const secret = env.JWT_SECRET;
-    const decoded = jwt.verify(token, secret) as unknown as TokenPayload;
+    const decoded = jwt.verify(token, secret, {
+      algorithms: ["HS256"],
+    }) as unknown as TokenPayload;
 
     const user = await prisma.user.findFirst({
       where: {

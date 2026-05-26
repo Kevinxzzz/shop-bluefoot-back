@@ -2,6 +2,7 @@ import { describe, it, expect } from "@jest/globals";
 import request from "supertest";
 import express from "express";
 import { app } from "../../app.js";
+import { env } from "../config/env.js";
 import { authLimiter } from "./rateLimit.js";
 import rateLimit from "express-rate-limit";
 
@@ -21,9 +22,9 @@ describe("Security Measures (Helmet, CORS & Rate Limiting)", () => {
     it("should allow requests from valid FRONTEND_URL", async () => {
       const response = await request(app)
         .options("/health")
-        .set("Origin", "http://localhost:5173");
+        .set("Origin", env.FRONTEND_URL);
       
-      expect(response.headers["access-control-allow-origin"]).toBe("http://localhost:5173");
+      expect(response.headers["access-control-allow-origin"]).toBe(env.FRONTEND_URL);
     });
 
     it("should omit Access-Control-Allow-Origin header for invalid origin", async () => {

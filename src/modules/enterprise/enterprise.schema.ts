@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const createEnterpriseSchema = z.object({
-  document: z.string().min(14, "CNPJ deve ter 14 dígitos"),
+  document: z.string().length(14, "CNPJ deve ter exatamente 14 dígitos").regex(/^\d{14}$/, "CNPJ deve conter apenas números"),
   name: z.string().min(1, "Nome da empresa é obrigatório"),
   fantasyName: z.string().optional(),
   contactLink: z.string().url("Link de contato inválido").optional(),
