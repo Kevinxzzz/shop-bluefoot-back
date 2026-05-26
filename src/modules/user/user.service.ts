@@ -29,7 +29,7 @@ export async function generateInviteToken(
     // 2. Gerar o JWT com o ID do registro
     const jwtToken = jwt.sign(
       { inviteTokenId: inviteRecord.id, enterpriseId },
-      env.JWT_SECRET || "default_secret"
+      env.JWT_SECRET
     );
 
     // 3. Atualizar o registro com o token real
@@ -55,7 +55,8 @@ export async function registerUserWithInvite({
   try {
     decoded = jwt.verify(
       inviteToken,
-      env.JWT_SECRET || "default_secret"
+      env.JWT_SECRET,
+      { algorithms: ["HS256"] }
     ) as { inviteTokenId: string; enterpriseId: string };
   } catch (err) {
     throw new AppError("Token de convite inválido ou mal formatado", 400);
@@ -128,7 +129,7 @@ export async function registerUserWithInvite({
     enterpriseId: result.enterpriseId,
   };
 
-  const token = jwt.sign(tokenPayload, env.JWT_SECRET || "default_secret", {
+  const token = jwt.sign(tokenPayload, env.JWT_SECRET, {
     expiresIn: "1d",
   });
 

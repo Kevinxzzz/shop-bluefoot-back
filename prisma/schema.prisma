@@ -2,10 +2,12 @@
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
 generator client {
-  provider   = "prisma-client-js"
-  output     = "../src/generated/prisma"
-  engineType = "library"
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
 }
+
+
+
 
 datasource db {
   provider = "postgresql"
