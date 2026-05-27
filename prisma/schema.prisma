@@ -126,6 +126,8 @@ model Category {
 
   products ProductCategory[]
 
+  deletedAt DateTime? @map("deleted_at")
+
   @@unique([enterpriseId, slug]) // Garante que o slug não se repita na mesma empresa
   @@map("category")
 }
