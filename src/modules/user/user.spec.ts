@@ -310,4 +310,99 @@ describe("User Module", () => {
       expect(response.body.error).toBe("E-mail já está em uso");
     });
   });
+
+  describe("GET /users - List Users by Enterprise", () => {
+    let otherEnterpriseId: string;
+    let otherAdminToken: string;
+
+    beforeEach(async () => {
+      // Criar outra empresa e outro usuário para testar isolamento (multi-tenant)
+      const otherEnterprise = await prisma.enterprise.create({
+        data: {
+          cnpj: "00000000000000",
+          name: "Outra Empresa",
+          phoneNumber: "888888888",
+        },
+      });
+      otherEnterpriseId = otherEnterprise.id;
+
+      const adminRole = await prisma.userRole.findFirst({ where: { role: "ADMIN" } });
+
+      const otherAdmin = await prisma.user.create({
+        data: {
+          name: "Outro Admin",
+          email: "outro_admin@test.com",
+          password: "password123",
+          roleId: adminRole!.id,
+          enterpriseId: otherEnterpriseId,
+        },
+      });
+
+      otherAdminToken = jwt.sign(
+        { userId: otherAdmin.id, email: otherAdmin.email, role: "ADMIN", enterpriseId: otherEnterpriseId },
+        env.JWT_SECRET
+      );
+
+      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
+
+      // Criar um usuário já inativo na empresa principal para testar o status INACTIVE
+      await prisma.user.create({
+        data: {
+          name: "Inactive User",
+          email: "inactive@test.com",
+          password: "password123",
+          roleId: sellerRole!.id,
+          enterpriseId: enterpriseId,
+          deletedAt: new Date(),
+        },
+      });
+    });
+
+
+    it("should allow ADMIN to list users of their own enterprise", async () => {
+      const response = await request(app)
+        .get("/users")
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      expect(response.status).toBe(200);
+      expect(Array.isArray(response.body)).toBe(true);
+      expect(response.body.length).toBe(3); // adminUser (ativo), sellerUser (ativo) e Inactive User (inativo)
+
+      const activeUser = response.body.find((u: any) => u.id === adminUser.id);
+      expect(activeUser).toBeTruthy();
+      expect(activeUser.status).toBe("ACTIVE");
+      expect(activeUser.deletedAt).toBeNull();
+      expect(activeUser.role).toBe("ADMIN");
+
+      const inactiveUser = response.body.find((u: any) => u.email === "inactive@test.com");
+      expect(inactiveUser).toBeTruthy();
+      expect(inactiveUser.status).toBe("INACTIVE");
+      expect(inactiveUser.deletedAt).not.toBeNull();
+      expect(inactiveUser.role).toBe("SELLER");
+    });
+
+    it("should forbid SELLER from listing users", async () => {
+      const response = await request(app)
+        .get("/users")
+        .set("Authorization", `Bearer ${sellerToken}`);
+
+      expect(response.status).toBe(403);
+      expect(response.body.error).toBe("Acesso negado");
+    });
+
+    it("should only list users from the authenticated user's enterprise", async () => {
+      const response = await request(app)
+        .get("/users")
+        .set("Authorization", `Bearer ${otherAdminToken}`);
+
+      expect(response.status).toBe(200);
+      expect(Array.isArray(response.body)).toBe(true);
+      expect(response.body.length).toBe(1); // apenas o outro admin
+
+      expect(response.body[0].id).not.toBe(adminUser.id);
+      expect(response.body[0].id).not.toBe(sellerUser.id);
+      expect(response.body[0].email).toBe("outro_admin@test.com");
+    });
+  });
 });
+

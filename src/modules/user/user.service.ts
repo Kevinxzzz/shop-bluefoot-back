@@ -143,3 +143,33 @@ export async function registerUserWithInvite({
     },
   };
 }
+
+export async function listUsers(enterpriseId: string) {
+  const users = await prisma.user.findMany({
+    where: { enterpriseId },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      role: {
+        select: {
+          role: true,
+        },
+      },
+      createdAt: true,
+      deletedAt: true,
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  return users.map((user) => ({
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role.role,
+    status: user.deletedAt ? "INACTIVE" : "ACTIVE",
+    createdAt: user.createdAt,
+    deletedAt: user.deletedAt,
+  }));
+}
+
