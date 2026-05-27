@@ -12,7 +12,9 @@ declare global {
   namespace Express {
     interface Request {
       user?: {
+        id: string;
         userId: string;
+        name: string;
         email: string;
         role: string;
         enterpriseId: string;
@@ -51,6 +53,7 @@ export async function authMiddleware(
       },
       select: {
         id: true,
+        name: true,
         email: true,
         enterpriseId: true,
         role: {
@@ -66,7 +69,9 @@ export async function authMiddleware(
     }
 
     req.user = {
+      id: user.id,
       userId: user.id,
+      name: user.name,
       email: user.email,
       role: user.role.role,
       enterpriseId: user.enterpriseId,
