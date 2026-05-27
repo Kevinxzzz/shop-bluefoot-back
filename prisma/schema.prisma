@@ -95,6 +95,7 @@ model EnterpriseInviteToken {
 
   usedBy UserToken[]
 
+  @@index([enterpriseId, canceledAt])
   @@map("enterprise_invite_token")
 }
 
