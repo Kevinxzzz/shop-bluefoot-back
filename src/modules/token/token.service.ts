@@ -113,9 +113,12 @@ export async function listTokens(enterpriseId: string, page: number = 1, limit: 
 export async function validateInviteToken(rawToken: string) {
   const token = await prisma.enterpriseInviteToken.findFirst({
     where: { token: rawToken },
-    include: {
+    select: {
       enterprise: { select: { name: true } },
       _count: { select: { usedBy: true } },
+      canceledAt: true,
+      expiredAt: true,
+      maxUses: true,
     },
   });
 

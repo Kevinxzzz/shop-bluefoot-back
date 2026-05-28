@@ -17,9 +17,17 @@ export async function LoggingIn({ email, password }: LoginInput) {
       email,
       deletedAt: null,
     },
-
-    include: {
-      role: true,
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      password: true,
+      enterpriseId: true,
+      role: {
+        select: {
+          role: true,
+        },
+      },
     },
   });
 
