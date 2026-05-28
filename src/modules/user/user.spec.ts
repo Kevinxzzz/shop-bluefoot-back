@@ -14,9 +14,12 @@ describe("User Module", () => {
   let sellerUser: any;
 
   beforeEach(async () => {
-    // Limpar tabelas mantendo as roles
-    await prisma.enterpriseInviteToken.deleteMany();
+    await prisma.productMedia.deleteMany();
+    await prisma.productCategory.deleteMany();
+    await prisma.product.deleteMany();
     await prisma.userToken.deleteMany();
+    await prisma.enterpriseInviteToken.deleteMany();
+    await prisma.category.deleteMany();
     await prisma.user.deleteMany();
     await prisma.enterprise.deleteMany();
 
@@ -404,5 +407,128 @@ describe("User Module", () => {
       expect(response.body[0].email).toBe("outro_admin@test.com");
     });
   });
-});
 
+  describe("PATCH /users/:id/role - Update User Role", () => {
+    it("should allow an ADMIN to change another user's role", async () => {
+      const response = await request(app)
+        .patch(`/users/${sellerUser.id}/role`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ role: "ADMIN" });
+
+      expect(response.status).toBe(200);
+      expect(response.body.role).toBe("ADMIN");
+
+      const updatedUser = await prisma.user.findUnique({
+        where: { id: sellerUser.id },
+        include: { role: true },
+      });
+      expect(updatedUser?.role.role).toBe("ADMIN");
+    });
+
+    it("should forbid a SELLER from changing a role", async () => {
+      const response = await request(app)
+        .patch(`/users/${sellerUser.id}/role`)
+        .set("Authorization", `Bearer ${sellerToken}`)
+        .send({ role: "ADMIN" });
+
+      expect(response.status).toBe(403);
+      expect(response.body.error).toBe("Acesso negado");
+    });
+
+    it("should fail if ADMIN tries to change a user from another enterprise", async () => {
+      const otherEnterprise = await prisma.enterprise.create({
+        data: { cnpj: "00000000000001", name: "Other", phoneNumber: "777777777" },
+      });
+      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
+      const otherUser = await prisma.user.create({
+        data: {
+          name: "Other User",
+          email: "other_seller@test.com",
+          password: "pwd",
+          roleId: sellerRole!.id,
+          enterpriseId: otherEnterprise.id,
+        },
+      });
+
+      const response = await request(app)
+        .patch(`/users/${otherUser.id}/role`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ role: "ADMIN" });
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toBe("Usuário não encontrado");
+    });
+
+    it("should fail if trying to update a soft deleted user", async () => {
+      await prisma.user.update({
+        where: { id: sellerUser.id },
+        data: { deletedAt: new Date() },
+      });
+
+      const response = await request(app)
+        .patch(`/users/${sellerUser.id}/role`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ role: "ADMIN" });
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toBe("Usuário não encontrado");
+    });
+
+    it("should fail if role is invalid", async () => {
+      const response = await request(app)
+        .patch(`/users/${sellerUser.id}/role`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ role: "SUPERADMIN" });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain("Erro de validação");
+    });
+
+    it("should fail if user already has the requested role", async () => {
+      const response = await request(app)
+        .patch(`/users/${sellerUser.id}/role`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ role: "SELLER" });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBe("Usuário já possui esta role");
+    });
+
+    it("should fail if ADMIN tries to change their own role", async () => {
+      const response = await request(app)
+        .patch(`/users/${adminUser.id}/role`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ role: "SELLER" });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBe("Você não pode alterar sua própria role");
+    });
+
+    it("should fail if secondary ADMIN tries to change the founder admin's role", async () => {
+      // Criar admin secundário
+      const adminRole = await prisma.userRole.findFirst({ where: { role: "ADMIN" } });
+      const secondaryAdmin = await prisma.user.create({
+        data: {
+          name: "Secondary Admin",
+          email: "secadmin@test.com",
+          password: "pwd",
+          roleId: adminRole!.id,
+          enterpriseId,
+        },
+      });
+
+      const secondaryToken = jwt.sign(
+        { userId: secondaryAdmin.id, email: secondaryAdmin.email, role: "ADMIN", enterpriseId },
+        env.JWT_SECRET
+      );
+
+      const response = await request(app)
+        .patch(`/users/${adminUser.id}/role`) // tentando alterar o adminUser (que é o founder criado no beforeEach)
+        .set("Authorization", `Bearer ${secondaryToken}`)
+        .send({ role: "SELLER" });
+
+      expect(response.status).toBe(403);
+      expect(response.body.error).toBe("O administrador fundador da empresa não pode ter o cargo alterado");
+    });
+  });
+});
