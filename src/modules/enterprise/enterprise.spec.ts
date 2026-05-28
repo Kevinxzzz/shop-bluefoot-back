@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach } from "@jest/globals";
 import request from "supertest";
+import jwt from "jsonwebtoken";
 import { app } from "../../app.js";
 import { prisma } from "../../shared/database/prisma.js";
+import { env } from "../../shared/config/env.js";
 
 describe("Enterprise Module", () => {
   beforeEach(async () => {
@@ -59,7 +61,7 @@ describe("Enterprise Module", () => {
 
     const dbUser = await prisma.user.findUnique({
       where: { email: validEnterpriseData.userEmail },
-      include: { role: true },
+      select: { role: { select: { role: true } }, enterpriseId: true },
     });
     expect(dbUser).toBeTruthy();
     expect(dbUser?.role.role).toBe("ADMIN");
@@ -149,5 +151,199 @@ describe("Enterprise Module", () => {
 
     expect(response.status).toBe(400);
     expect(response.body.error).toBe("Link de contato já está em uso");
+  });
+
+  describe("GET /enterprise", () => {
+    let adminToken: string;
+    let sellerToken: string;
+
+    beforeEach(async () => {
+      const res = await request(app)
+        .post("/enterprise/register")
+        .send(validEnterpriseData);
+      
+      adminToken = res.body.token;
+      const enterpriseId = res.body.enterprise.id;
+
+      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
+      const seller = await prisma.user.create({
+        data: {
+          name: "Seller Test",
+          email: "seller@teste.com",
+          password: "pwd",
+          roleId: sellerRole!.id,
+          enterpriseId,
+        }
+      });
+
+      sellerToken = jwt.sign(
+        { userId: seller.id, role: "SELLER", enterpriseId },
+        process.env.JWT_SECRET || "test",
+        { expiresIn: "1d", algorithm: "HS256" }
+      );
+    });
+
+    it("should allow ADMIN to get enterprise details", async () => {
+      const response = await request(app)
+        .get("/enterprise")
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty("name", validEnterpriseData.name);
+      expect(response.body).toHaveProperty("document", validEnterpriseData.document);
+      expect(response.body).toHaveProperty("phone");
+      expect(response.body).toHaveProperty("salesGroupLink", null);
+      // Ensure no extra fields like id or createdAt
+      expect(response.body).not.toHaveProperty("id");
+      expect(response.body).not.toHaveProperty("createdAt");
+    });
+
+    it("should allow SELLER to get enterprise details", async () => {
+      const response = await request(app)
+        .get("/enterprise")
+        .set("Authorization", `Bearer ${sellerToken}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty("document", validEnterpriseData.document);
+    });
+  });
+
+  describe("PUT /enterprise", () => {
+    let adminToken: string;
+    let sellerToken: string;
+    let enterpriseId: string;
+
+    beforeEach(async () => {
+      const res = await request(app)
+        .post("/enterprise/register")
+        .send(validEnterpriseData);
+      
+      adminToken = res.body.token;
+      enterpriseId = res.body.enterprise.id;
+
+      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
+      const seller = await prisma.user.create({
+        data: {
+          name: "Seller Test",
+          email: "seller@teste.com",
+          password: "pwd",
+          roleId: sellerRole!.id,
+          enterpriseId,
+        }
+      });
+
+      sellerToken = jwt.sign(
+        { userId: seller.id, role: "SELLER", enterpriseId },
+        process.env.JWT_SECRET || "test",
+        { expiresIn: "1d", algorithm: "HS256" }
+      );
+    });
+
+    it("should allow ADMIN to update enterprise", async () => {
+      const response = await request(app)
+        .put("/enterprise")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({
+          name: "New Name LTDA",
+          phone: "11988888888",
+          salesGroupLink: "https://t.me/newlink"
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.name).toBe("New Name LTDA");
+      expect(response.body.phone).toBe("11988888888");
+      expect(response.body.salesGroupLink).toBe("https://t.me/newlink");
+    });
+
+    it("should forbid SELLER from updating enterprise", async () => {
+      const response = await request(app)
+        .put("/enterprise")
+        .set("Authorization", `Bearer ${sellerToken}`)
+        .send({ name: "Hacked" });
+
+      expect(response.status).toBe(403);
+    });
+
+    it("should fail if payload is empty", async () => {
+      const response = await request(app)
+        .put("/enterprise")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({});
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain("Erro de validação");
+    });
+
+    it("should fail on invalid salesGroupLink URL", async () => {
+      const response = await request(app)
+        .put("/enterprise")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ salesGroupLink: "not-a-url" });
+
+      expect(response.status).toBe(400);
+    });
+
+    it("should ignore fields outside DTO (like document)", async () => {
+      const response = await request(app)
+        .put("/enterprise")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ name: "Updated Name", document: "00000000000000" });
+
+      expect(response.status).toBe(200);
+      expect(response.body.document).toBe(validEnterpriseData.document); // still original
+    });
+
+    it("should allow partial updates (e.g. only phone)", async () => {
+      const response = await request(app)
+        .put("/enterprise")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ phone: "11977777777" });
+
+      expect(response.status).toBe(200);
+      expect(response.body.phone).toBe("11977777777");
+      expect(response.body.name).toBe(validEnterpriseData.name); // unchanged
+    });
+
+    it("should update salesGroupLink correctly", async () => {
+      // Create first
+      await request(app)
+        .put("/enterprise")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ salesGroupLink: "https://group1.com" });
+
+      // Update to new
+      const response = await request(app)
+        .put("/enterprise")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ salesGroupLink: "https://group2.com" });
+
+      expect(response.status).toBe(200);
+      expect(response.body.salesGroupLink).toBe("https://group2.com");
+
+      // Verify DB has only 1 link
+      const links = await prisma.enterpriseLinkGroup.findMany({ where: { enterpriseId } });
+      expect(links).toHaveLength(1);
+      expect(links[0].link).toBe("https://group2.com");
+    });
+
+    it("should remove salesGroupLink when null is passed", async () => {
+      // Create first
+      await request(app)
+        .put("/enterprise")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ salesGroupLink: "https://group1.com" });
+
+      // Update to null
+      const response = await request(app)
+        .put("/enterprise")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ salesGroupLink: null });
+
+      expect(response.status).toBe(200);
+      expect(response.body.salesGroupLink).toBe(null);
+
+      const links = await prisma.enterpriseLinkGroup.findMany({ where: { enterpriseId } });
+      expect(links).toHaveLength(0);
+    });
   });
 });

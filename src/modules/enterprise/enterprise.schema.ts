@@ -9,3 +9,18 @@ export const createEnterpriseSchema = z.object({
   userEmail: z.string().email("Email inválido"),
   userPassword: z.string().min(6, "A senha deve ter no mínimo 6 caracteres"),
 });
+
+export const updateEnterpriseSchema = z
+  .object({
+    name: z.string().trim().min(1, "Nome da empresa não pode ser vazio"),
+    phone: z.string().trim().min(1, "Telefone não pode ser vazio"),
+    salesGroupLink: z
+      .string()
+      .trim()
+      .url("Link do grupo de vendas deve ser uma URL válida")
+      .nullable(),
+  })
+  .partial()
+  .refine((data) => Object.keys(data).length > 0, {
+    message: "Informe ao menos um campo para atualização",
+  });

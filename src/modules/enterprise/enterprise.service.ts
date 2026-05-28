@@ -154,3 +154,97 @@ export async function createEnterprise({
     },
   };
 }
+
+export async function getEnterprise(enterpriseId: string) {
+  const enterprise = await prisma.enterprise.findUnique({
+    where: { id: enterpriseId },
+    select: {
+      id: true,
+      name: true,
+      cnpj: true,
+      phoneNumber: true,
+      links: {
+        select: {
+          link: true,
+        },
+      },
+    },
+  });
+
+  if (!enterprise) {
+    throw new AppError("Empresa não encontrada", 404);
+  }
+
+  return {
+    name: enterprise.name,
+    document: enterprise.cnpj,
+    phone: enterprise.phoneNumber,
+    salesGroupLink: enterprise.links[0]?.link ?? null,
+  };
+}
+
+type UpdateEnterpriseInput = z.infer<typeof import("./enterprise.schema.js").updateEnterpriseSchema>;
+
+export async function updateEnterprise({ enterpriseId, data }: { enterpriseId: string, data: UpdateEnterpriseInput }) {
+  const result = await prisma.$transaction(async (tx) => {
+    const enterprise = await tx.enterprise.findUnique({
+      where: { id: enterpriseId },
+    });
+
+    if (!enterprise) {
+      throw new AppError("Empresa não encontrada", 404);
+    }
+
+    const updatedEnterprise = await tx.enterprise.update({
+      where: { id: enterpriseId },
+      data: {
+        ...(data.name && { name: data.name }),
+        ...(data.phone && { phoneNumber: data.phone }),
+      },
+    });
+
+    let salesGroupLink = null;
+
+    if (data.salesGroupLink !== undefined) {
+      const existingLink = await tx.enterpriseLinkGroup.findFirst({
+        where: { enterpriseId },
+      });
+
+      if (data.salesGroupLink === null) {
+        if (existingLink) {
+          await tx.enterpriseLinkGroup.delete({ where: { id: existingLink.id } });
+        }
+      } else {
+        if (existingLink) {
+          const updatedLink = await tx.enterpriseLinkGroup.update({
+            where: { id: existingLink.id },
+            data: { link: data.salesGroupLink },
+          });
+          salesGroupLink = updatedLink.link;
+        } else {
+          const newLink = await tx.enterpriseLinkGroup.create({
+            data: {
+              enterpriseId,
+              link: data.salesGroupLink,
+            },
+          });
+          salesGroupLink = newLink.link;
+        }
+      }
+    } else {
+      const existingLink = await tx.enterpriseLinkGroup.findFirst({
+        where: { enterpriseId },
+      });
+      salesGroupLink = existingLink?.link ?? null;
+    }
+
+    return {
+      name: updatedEnterprise.name,
+      document: updatedEnterprise.cnpj,
+      phone: updatedEnterprise.phoneNumber,
+      salesGroupLink,
+    };
+  });
+
+  return result;
+}
