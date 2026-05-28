@@ -11,3 +11,14 @@ export const registerUserSchema = z.object({
   email: z.string().email("Email inválido"),
   password: z.string().min(6, "A senha deve ter no mínimo 6 caracteres"),
 });
+
+export const updateUserRoleSchema = z.object({
+  params: z.object({
+    id: z.string().uuid("ID inválido"),
+  }),
+  body: z.object({
+    role: z.enum(["ADMIN", "SELLER"], {
+      message: "Role inválida",
+    }),
+  }),
+});

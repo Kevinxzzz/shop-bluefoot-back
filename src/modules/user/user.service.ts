@@ -12,7 +12,7 @@ type RegisterUserInput = z.infer<typeof registerUserSchema>;
 export async function generateInviteToken(
   enterpriseId: string,
   userId: string,
-  { maxUses, expiredAt }: GenerateInviteInput
+  { maxUses, expiredAt }: GenerateInviteInput,
 ) {
   const result = await prisma.$transaction(async (tx) => {
     // 1. Criar o registro no banco com token temporário para gerar o ID
@@ -29,7 +29,7 @@ export async function generateInviteToken(
     // 2. Gerar o JWT com o ID do registro
     const jwtToken = jwt.sign(
       { inviteTokenId: inviteRecord.id, enterpriseId },
-      env.JWT_SECRET
+      env.JWT_SECRET,
     );
 
     // 3. Atualizar o registro com o token real
@@ -53,11 +53,9 @@ export async function registerUserWithInvite({
   let decoded: { inviteTokenId: string; enterpriseId: string };
 
   try {
-    decoded = jwt.verify(
-      inviteToken,
-      env.JWT_SECRET,
-      { algorithms: ["HS256"] }
-    ) as { inviteTokenId: string; enterpriseId: string };
+    decoded = jwt.verify(inviteToken, env.JWT_SECRET, {
+      algorithms: ["HS256"],
+    }) as { inviteTokenId: string; enterpriseId: string };
   } catch (err) {
     throw new AppError("Token de convite inválido ou mal formatado", 400);
   }
@@ -144,6 +142,31 @@ export async function registerUserWithInvite({
   };
 }
 
+async function getFounderAdmin(enterpriseId: string) {
+  // O verdadeiro fundador é o único usuário que entrou na empresa
+  // sem usar um token de convite (pois ele criou a empresa)
+  const founder = await prisma.user.findFirst({
+    where: {
+      enterpriseId,
+      deletedAt: null,
+      role: {
+        role: "ADMIN",
+      },
+      usedTokens: {
+        none: {}
+      }
+    },
+    orderBy: {
+      createdAt: "asc"
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  return founder;
+}
+
 export async function listUsers(enterpriseId: string) {
   const users = await prisma.user.findMany({
     where: { enterpriseId },
@@ -162,14 +185,96 @@ export async function listUsers(enterpriseId: string) {
     orderBy: { createdAt: "desc" },
   });
 
+  const founderAdmin = await getFounderAdmin(enterpriseId);
+
   return users.map((user) => ({
     id: user.id,
     name: user.name,
     email: user.email,
     role: user.role.role,
     status: user.deletedAt ? "INACTIVE" : "ACTIVE",
+    isFounder: user.id === founderAdmin?.id,
     createdAt: user.createdAt,
     deletedAt: user.deletedAt,
   }));
 }
 
+export async function updateUserRole({
+  userId,
+  role,
+  enterpriseId,
+  adminId,
+}: {
+  userId: string;
+  role: string;
+  enterpriseId: string;
+  adminId: string;
+}) {
+  if (adminId === userId) {
+    throw new AppError("Você não pode alterar sua própria role", 400);
+  }
+
+  const founderAdmin = await getFounderAdmin(enterpriseId);
+  if (founderAdmin?.id === userId) {
+    throw new AppError(
+      "O administrador fundador da empresa não pode ter o cargo alterado",
+      403,
+    );
+  }
+
+  const newRole = await prisma.userRole.findUnique({
+    where: { role },
+  });
+
+  if (!newRole) {
+    throw new AppError("Role inválida", 400);
+  }
+
+  const user = await prisma.user.findFirst({
+    where: {
+      id: userId,
+      enterpriseId,
+      deletedAt: null,
+    },
+    select: {
+      id: true,
+      role: {
+        select: {
+          role: true,
+        },
+      },
+    },
+  });
+
+  if (!user) {
+    throw new AppError("Usuário não encontrado", 404);
+  }
+
+  if (user.role.role === role) {
+    throw new AppError("Usuário já possui esta role", 400);
+  }
+
+  const updatedUser = await prisma.user.update({
+    where: { id: userId },
+    data: { roleId: newRole.id },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      role: {
+        select: {
+          role: true,
+        },
+      },
+      deletedAt: true,
+    },
+  });
+
+  return {
+    id: updatedUser.id,
+    name: updatedUser.name,
+    email: updatedUser.email,
+    role: updatedUser.role.role,
+    status: updatedUser.deletedAt ? "INACTIVE" : "ACTIVE",
+  };
+}

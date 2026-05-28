@@ -18,10 +18,24 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  const deleteProductMedia = prisma.productMedia.deleteMany();
+  const deleteProductCategory = prisma.productCategory.deleteMany();
+  const deleteProducts = prisma.product.deleteMany();
+  const deleteUserTokens = prisma.userToken.deleteMany();
+  const deleteInviteTokens = prisma.enterpriseInviteToken.deleteMany();
+  const deleteCategories = prisma.category.deleteMany();
   const deleteUsers = prisma.user.deleteMany();
   const deleteEnterprises = prisma.enterprise.deleteMany();
-  const deleteTokens = prisma.enterpriseInviteToken.deleteMany();
 
-  await prisma.$transaction([deleteTokens, deleteUsers, deleteEnterprises]);
+  await prisma.$transaction([
+    deleteProductMedia,
+    deleteProductCategory,
+    deleteProducts,
+    deleteUserTokens,
+    deleteInviteTokens,
+    deleteCategories,
+    deleteUsers,
+    deleteEnterprises,
+  ]);
   await prisma.$disconnect();
 });
