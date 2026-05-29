@@ -42,6 +42,7 @@ model User {
   name          String
   email         String                  @unique
   password      String
+  profileImageUrl String?
   contactLink   String?                 @unique @map("link_contact")
   roleId        String                  @map("role_id")
   enterpriseId  String                  @map("enterprise_id")

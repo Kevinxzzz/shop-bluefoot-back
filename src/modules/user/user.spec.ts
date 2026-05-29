@@ -531,4 +531,87 @@ describe("User Module", () => {
       expect(response.body.error).toBe("O administrador fundador da empresa não pode ter o cargo alterado");
     });
   });
+
+  describe("PATCH /users/profile - Update User Profile", () => {
+    it("should allow a user to update their own profile", async () => {
+      const response = await request(app)
+        .patch("/users/profile")
+        .set("Authorization", `Bearer ${sellerToken}`)
+        .send({
+          name: "Novo Nome Seller",
+          contactLink: "https://wa.me/55999999999",
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.name).toBe("Novo Nome Seller");
+      expect(response.body.contactLink).toBe("https://wa.me/55999999999");
+      expect(response.body.email).toBe(sellerUser.email);
+    });
+
+    it("should fail if no data is provided", async () => {
+      const response = await request(app)
+        .patch("/users/profile")
+        .set("Authorization", `Bearer ${sellerToken}`)
+        .send({});
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBe("Nenhum dado fornecido para atualização");
+    });
+
+    it("should fail if trying to update unallowed fields like roleId or password", async () => {
+      const response = await request(app)
+        .patch("/users/profile")
+        .set("Authorization", `Bearer ${sellerToken}`)
+        .send({
+          name: "Hacker",
+          roleId: "admin-role-id",
+          password: "newpassword123"
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain("Erro de validação");
+    });
+
+    it("should fail if email is already in use by another user", async () => {
+      const response = await request(app)
+        .patch("/users/profile")
+        .set("Authorization", `Bearer ${sellerToken}`)
+        .send({
+          email: adminUser.email, // Tentando usar o email do admin
+        });
+
+      expect(response.status).toBe(409);
+      expect(response.body.error).toBe("E-mail já está em uso");
+    });
+
+    it("should fail if contactLink is already in use by another user", async () => {
+      // Set admin contactLink
+      await prisma.user.update({
+        where: { id: adminUser.id },
+        data: { contactLink: "https://wa.me/5511111111" }
+      });
+
+      const response = await request(app)
+        .patch("/users/profile")
+        .set("Authorization", `Bearer ${sellerToken}`)
+        .send({
+          contactLink: "https://wa.me/5511111111", // Tentando usar o contato do admin
+        });
+
+      expect(response.status).toBe(409);
+      expect(response.body.error).toBe("Link de contato já está em uso");
+    });
+
+    it("should allow update if contactLink and email are the same as current", async () => {
+      const response = await request(app)
+        .patch("/users/profile")
+        .set("Authorization", `Bearer ${sellerToken}`)
+        .send({
+          email: sellerUser.email,
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.email).toBe(sellerUser.email);
+    });
+  });
 });

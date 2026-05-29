@@ -22,3 +22,10 @@ export const updateUserRoleSchema = z.object({
     }),
   }),
 });
+
+export const updateProfileSchema = z.object({
+  name: z.string().min(1, "O nome não pode estar vazio").optional(),
+  email: z.string().email("Email inválido").optional(),
+  contactLink: z.string().max(255).optional(),
+  profileImageUrl: z.string().url("URL de imagem inválida").optional(),
+}).strict();
