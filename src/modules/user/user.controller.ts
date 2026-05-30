@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from "express";
 import { generateInviteSchema, registerUserSchema, updateUserRoleSchema, updateProfileSchema } from "./user.schema.js";
 import { generateInviteToken, registerUserWithInvite, listUsers, updateUserRole as updateUserRoleService, updateProfile as updateProfileService } from "./user.service.js";
 import { AppError } from "../../shared/errors/AppError.js";
+import { getProfile as getProfileService } from "./user.service.js";
 
 export const createInvite = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -82,6 +83,20 @@ export const updateProfile = async (req: Request, res: Response, next: NextFunct
     }
 
     const result = await updateProfileService(req.user.userId, parsedData);
+
+    return res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getProfile = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!req.user?.userId) {
+      throw new AppError("Usuário não autenticado corretamente", 401);
+    }
+
+    const result = await getProfileService(req.user.userId);
 
     return res.status(200).json(result);
   } catch (error) {

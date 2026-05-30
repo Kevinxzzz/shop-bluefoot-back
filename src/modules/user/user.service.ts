@@ -286,61 +286,78 @@ export async function updateProfile(userId: string, data: UpdateProfileInput) {
     throw new AppError("Nenhum dado fornecido para atualização", 400);
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { id: true, deletedAt: true, email: true, contactLink: true },
-  });
-
-  if (!user || user.deletedAt) {
-    throw new AppError("Usuário não encontrado ou inativo", 404);
-  }
-
-  if (data.email && data.email !== user.email) {
-    const existingEmail = await prisma.user.findUnique({
-      where: { email: data.email },
-    });
-    if (existingEmail) {
-      throw new AppError("E-mail já está em uso", 409);
-    }
-  }
-
-  if (data.contactLink && data.contactLink !== user.contactLink) {
-    const existingContact = await prisma.user.findUnique({
-      where: { contactLink: data.contactLink },
-    });
-    if (existingContact) {
-      throw new AppError("Link de contato já está em uso", 409);
-    }
-  }
-
   const updateData = Object.fromEntries(
     Object.entries(data).filter(([_, v]) => v !== undefined)
   );
 
-  const updatedUser = await prisma.user.update({
+  try {
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: updateData,
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        profileImageUrl: true,
+        contactLink: true,
+        role: {
+          select: {
+            role: true,
+          },
+        },
+      },
+    });
+
+    return {
+      id: updatedUser.id,
+      name: updatedUser.name,
+      email: updatedUser.email,
+      profileImageUrl: updatedUser.profileImageUrl,
+      contactLink: updatedUser.contactLink,
+      role: updatedUser.role.role,
+    };
+  } catch (err: any) {
+    // P2002 = Unique constraint failed
+    if (err.code === "P2002") {
+      const target = err.meta?.target as string[] | undefined;
+      if (target?.includes("email")) {
+        throw new AppError("E-mail já está em uso", 409);
+      }
+      if (target?.includes("link_contact")) {
+        throw new AppError("Link de contato já está em uso", 409);
+      }
+      throw new AppError("O dado fornecido já está em uso", 409);
+    }
+    throw err;
+  }
+}
+
+export async function getProfile(userId: string) {
+  const user = await prisma.user.findUnique({
     where: { id: userId },
-    data: updateData as any,
     select: {
       id: true,
       name: true,
       email: true,
-      profileImageUrl: true,
       contactLink: true,
+      profileImageUrl: true,
       role: {
-        select: {
-          role: true,
-        },
+        select: { role: true },
       },
     },
   });
 
+  if (!user) {
+    throw new AppError("Usuário não encontrado", 404);
+  }
+
   return {
-    id: updatedUser.id,
-    name: updatedUser.name,
-    email: updatedUser.email,
-    profileImageUrl: updatedUser.profileImageUrl,
-    contactLink: updatedUser.contactLink,
-    role: updatedUser.role.role,
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    contactLink: user.contactLink,
+    profileImageUrl: user.profileImageUrl,
+    role: user.role.role,
   };
 }
 
