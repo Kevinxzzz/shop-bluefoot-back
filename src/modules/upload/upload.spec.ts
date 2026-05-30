@@ -4,18 +4,13 @@ import { updateProfileImage } from "./upload.service.js";
 import { AppError } from "../../shared/errors/AppError.js";
 import { s3 } from "../../shared/config/s3.js";
 
-jest.mock("../../shared/config/s3.js", () => ({
-  s3: {
-    send: jest.fn().mockResolvedValue({} as never),
-  },
-}));
-
 describe("Upload Service", () => {
   let enterpriseId: string;
   let adminRole: any;
   let testUser: any;
 
   beforeEach(async () => {
+    jest.spyOn(s3, "send").mockImplementation(() => Promise.resolve({} as never));
     jest.clearAllMocks();
 
     await prisma.productMedia.deleteMany();

@@ -320,10 +320,12 @@ export async function updateProfile(userId: string, data: UpdateProfileInput) {
     // P2002 = Unique constraint failed
     if (err.code === "P2002") {
       const target = err.meta?.target as string[] | undefined;
-      if (target?.includes("email")) {
+      const targetStr = JSON.stringify(err.meta || "").toLowerCase() + " " + err.message.toLowerCase();
+      
+      if (target?.includes("email") || targetStr.includes("email")) {
         throw new AppError("E-mail já está em uso", 409);
       }
-      if (target?.includes("link_contact")) {
+      if (target?.includes("link_contact") || targetStr.includes("link_contact")) {
         throw new AppError("Link de contato já está em uso", 409);
       }
       throw new AppError("O dado fornecido já está em uso", 409);
