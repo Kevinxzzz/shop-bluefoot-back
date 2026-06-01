@@ -4,9 +4,17 @@ import { s3 } from "../s3.js";
 import { env } from "../env.js";
 import { AppError } from "../../errors/AppError.js";
 
-const allowedMimes = ["image/jpeg", "image/png", "image/webp"];
+const allowedMimes = [
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "video/mp4",
+  "video/quicktime", // MOV
+  "video/webm",
+  "video/x-m4v"
+];
 
-export const imageUpload = multer({
+export const productMediaUpload = multer({
   storage: multerS3({
     s3,
     bucket: env.AWS_BUCKET_NAME!,
@@ -18,22 +26,18 @@ export const imageUpload = multer({
       const sanitizedName = file.originalname
         .replace(/\s+/g, "_")
         .replace(/[^\w.-]/g, "");
-      const fileName = `enterprise/${enterpriseId}/users/${userId}/avatar/${Date.now()}-${sanitizedName}`;
+      const fileName = `enterprise/${enterpriseId}/users/${userId}/products/temp/${Date.now()}-${sanitizedName}`;
       cb(null, fileName);
     },
   }),
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB
+    fileSize: 20 * 1024 * 1024,
   },
   fileFilter: (req, file, cb) => {
     if (allowedMimes.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(
-        new AppError(
-          "Invalid file type. Only JPEG, PNG and WEBP are allowed.",
-        ) as any,
-      );
+      cb(new AppError("Invalid file type. Only JPEG, PNG, WEBP, MP4, MOV, WEBM and M4V are allowed.") as any);
     }
   },
 });
