@@ -21,13 +21,26 @@ export async function updateProfileImage(
     throw new AppError("Usuário não encontrado", 404);
   }
 
-  await prisma.user.update({
-    where: { id: userId },
-    data: {
-      profileImageUrl: data.location,
-      profileImageKey: data.key,
-    },
-  });
+  try {
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        profileImageUrl: data.location,
+        profileImageKey: data.key,
+      },
+    });
+  } catch (error) {
+    try {
+      const command = new DeleteObjectCommand({
+        Bucket: env.AWS_BUCKET_NAME!,
+        Key: data.key,
+      });
+      await s3.send(command);
+    } catch (s3Error) {
+      console.error("Failed to rollback newly uploaded profile image from S3:", s3Error);
+    }
+    throw error;
+  }
 
   if (currentUser.profileImageKey) {
     try {

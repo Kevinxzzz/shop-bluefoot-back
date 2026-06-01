@@ -1,5 +1,13 @@
 import { beforeAll, afterAll } from "@jest/globals";
-import "dotenv/config";
+import dotenv from "dotenv";
+import path from "path";
+import fs from "fs";
+
+const envPath = fs.existsSync(path.resolve(process.cwd(), ".env.test"))
+  ? path.resolve(process.cwd(), ".env.test")
+  : path.resolve(process.cwd(), ".env");
+
+dotenv.config({ path: envPath });
 import { prisma } from "../shared/database/prisma.js";
 
 beforeAll(async () => {

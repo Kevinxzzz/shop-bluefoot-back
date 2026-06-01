@@ -124,4 +124,82 @@ describe("Upload Service", () => {
       await expect(processProductMediaUpload(files)).rejects.toThrow("excede o limite de 20MB");
     });
   });
+
+  describe("Avatar Upload", () => {
+    it("should process valid upload, update db and delete old avatar from S3", async () => {
+      const data = {
+        location: "https://s3/new-avatar.jpg",
+        key: "new-avatar.jpg",
+      };
+
+      const result = await updateProfileImage(testUser.id, data);
+
+      expect(result.url).toBe(data.location);
+
+      const updatedUser = await prisma.user.findUnique({
+        where: { id: testUser.id },
+      });
+      expect(updatedUser?.profileImageKey).toBe(data.key);
+      expect(updatedUser?.profileImageUrl).toBe(data.location);
+
+      // Should have deleted old avatar
+      expect(s3.send).toHaveBeenCalled();
+      const sendMock = (s3.send as any).mock.calls;
+      const deleteCommand = sendMock.find((call: any[]) => call[0].input.Key === "old-key.png");
+      expect(deleteCommand).toBeTruthy();
+    });
+
+    it("should throw error if user does not exist", async () => {
+      const data = {
+        location: "https://s3/new-avatar.jpg",
+        key: "new-avatar.jpg",
+      };
+
+      await expect(
+        updateProfileImage("00000000-0000-0000-0000-000000000000", data)
+      ).rejects.toThrow("Usuário não encontrado");
+    });
+
+    it("should rollback newly uploaded S3 file if db update fails", async () => {
+      // Force prisma.user.update to fail
+      const originalUpdate = prisma.user.update;
+      prisma.user.update = jest.fn().mockRejectedValue(new Error("DB Error") as never) as any;
+
+      const data = {
+        location: "https://s3/new-avatar.jpg",
+        key: "new-avatar.jpg",
+      };
+
+      await expect(updateProfileImage(testUser.id, data)).rejects.toThrow("DB Error");
+
+      // Should have deleted the NEW avatar (rollback)
+      expect(s3.send).toHaveBeenCalled();
+      const sendMock = (s3.send as any).mock.calls;
+      const deleteCommand = sendMock.find((call: any[]) => call[0].input.Key === "new-avatar.jpg");
+      expect(deleteCommand).toBeTruthy();
+
+      // Restore
+      prisma.user.update = originalUpdate;
+    });
+
+    it("should not fail the request if deleting the old avatar from S3 fails", async () => {
+      // Force s3.send to fail for the old key deletion
+      jest.spyOn(s3, "send").mockRejectedValueOnce(new Error("S3 Delete Error") as never);
+
+      const data = {
+        location: "https://s3/new-avatar-2.jpg",
+        key: "new-avatar-2.jpg",
+      };
+
+      const result = await updateProfileImage(testUser.id, data);
+
+      expect(result.url).toBe(data.location);
+
+      const updatedUser = await prisma.user.findUnique({
+        where: { id: testUser.id },
+      });
+      expect(updatedUser?.profileImageKey).toBe(data.key);
+    });
+  });
 });
+
