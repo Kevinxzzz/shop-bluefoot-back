@@ -25,7 +25,7 @@ export function errorHandler(
   if (err instanceof multer.MulterError) {
     if (err.code === "LIMIT_FILE_SIZE") {
       return response.status(400).json({
-        error: "A imagem deve possuir no máximo 5MB.",
+        error: "Arquivo excede o tamanho máximo permitido para este upload.",
       });
     }
     return response.status(400).json({

@@ -1,43 +1,33 @@
 import multer from "multer";
-import multerS3 from "multer-s3";
-import { s3 } from "../s3.js";
-import { env } from "../env.js";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import { AppError } from "../../errors/AppError.js";
 
-const allowedMimes = [
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-  "video/mp4",
-  "video/quicktime", // MOV
-  "video/webm",
-  "video/x-m4v"
-];
+const tmpDir = path.join(os.tmpdir(), "shop-martins");
+if (!fs.existsSync(tmpDir)) {
+  fs.mkdirSync(tmpDir, { recursive: true });
+}
 
 export const productMediaUpload = multer({
-  storage: multerS3({
-    s3,
-    bucket: env.AWS_BUCKET_NAME!,
-    contentType: multerS3.AUTO_CONTENT_TYPE,
-
-    key: (req, file, cb) => {
-      const userId = req.user?.userId;
-      const enterpriseId = req.user?.enterpriseId;
-      const sanitizedName = file.originalname
-        .replace(/\s+/g, "_")
-        .replace(/[^\w.-]/g, "");
-      const fileName = `enterprise/${enterpriseId}/users/${userId}/products/temp/${Date.now()}-${sanitizedName}`;
-      cb(null, fileName);
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      cb(null, tmpDir);
+    },
+    filename: (req, file, cb) => {
+      cb(null, randomUUID());
     },
   }),
   limits: {
+    files: 4,
     fileSize: 20 * 1024 * 1024,
   },
   fileFilter: (req, file, cb) => {
-    if (allowedMimes.includes(file.mimetype)) {
+    if (file.mimetype.startsWith("image/") || file.mimetype.startsWith("video/")) {
       cb(null, true);
     } else {
-      cb(new AppError("Invalid file type. Only JPEG, PNG, WEBP, MP4, MOV, WEBM and M4V are allowed.") as any);
+      cb(new AppError("Tipo de arquivo inválido. Apenas imagens e vídeos são permitidos.") as any);
     }
   },
 });

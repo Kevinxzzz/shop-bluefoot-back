@@ -2,7 +2,7 @@ import { prisma } from "../../shared/database/prisma.js";
 import { AppError } from "../../shared/errors/AppError.js";
 import { s3 } from "../../shared/config/s3.js";
 import { env } from "../../shared/config/env.js";
-import { CopyObjectCommand, DeleteObjectCommand, DeleteObjectsCommand } from "@aws-sdk/client-s3";
+import { CopyObjectCommand, DeleteObjectsCommand } from "@aws-sdk/client-s3";
 import type { CreateProductInput } from "./product.schema.js";
 import { randomUUID } from "node:crypto";
 
@@ -160,15 +160,13 @@ export async function createProduct(
     // 5. Deletar os arquivos temporários APENAS após o sucesso da transação
     if (originalMediaKeys.length > 0) {
       try {
-        await Promise.all(
-          originalMediaKeys.map((key) =>
-            s3.send(
-              new DeleteObjectCommand({
-                Bucket: env.AWS_BUCKET_NAME!,
-                Key: key,
-              })
-            )
-          )
+        await s3.send(
+          new DeleteObjectsCommand({
+            Bucket: env.AWS_BUCKET_NAME!,
+            Delete: {
+              Objects: originalMediaKeys.map((Key) => ({ Key })),
+            },
+          })
         );
       } catch (deleteError) {
         console.error("Failed to delete temp files after successful product creation:", deleteError);

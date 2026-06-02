@@ -15,6 +15,7 @@ type CreateEnterpriseInput = z.infer<
 export async function createEnterprise({
   document,
   name,
+  phoneNumber,
   contactLink,
   userName,
   userEmail,
@@ -93,10 +94,7 @@ export async function createEnterprise({
           data: {
             cnpj: document,
             name,
-
-            // TEMPORÁRIO:
-            // seu schema exige phoneNumber obrigatório
-            phoneNumber: crypto.randomUUID(),
+            phoneNumber,
           },
         });
 

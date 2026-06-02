@@ -10,6 +10,7 @@ dotenv.config({ path: envPath });
 import { z } from "zod";
 
 const envSchema = z.object({
+  NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   API_PORT: z.coerce.number().default(3333),
   DATABASE_URL: z.string(),
   JWT_SECRET: z
@@ -26,6 +27,7 @@ const envSchema = z.object({
 const parsedEnv = envSchema.parse(process.env);
 
 export const env = {
+  NODE_ENV: parsedEnv.NODE_ENV,
   PORT: parsedEnv.API_PORT,
   DATABASE_URL: parsedEnv.DATABASE_URL,
   JWT_SECRET: parsedEnv.JWT_SECRET,

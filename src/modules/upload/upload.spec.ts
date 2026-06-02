@@ -1,4 +1,8 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import { prisma } from "../../shared/database/prisma.js";
 import { updateProfileImage, processProductMediaUpload } from "./upload.service.js";
 import { AppError } from "../../shared/errors/AppError.js";
@@ -13,6 +17,10 @@ describe("Upload Service", () => {
     jest
       .spyOn(s3, "send")
       .mockImplementation(() => Promise.resolve({} as never));
+      
+    jest.spyOn(fs, "createReadStream").mockImplementation(() => ({ destroy: jest.fn() }) as any);
+    jest.spyOn(fs.promises, "unlink").mockResolvedValue(undefined);
+
     jest.clearAllMocks();
 
     await prisma.productMedia.deleteMany();
@@ -54,74 +62,103 @@ describe("Upload Service", () => {
   });
 
   describe("Product Media", () => {
-    const createMockFile = (overrides: any = {}) => ({
-      fieldname: "files",
-      originalname: "test.jpg",
-      encoding: "7bit",
-      mimetype: "image/jpeg",
-      size: 1 * 1024 * 1024,
-      destination: "",
-      filename: "",
-      path: "",
-      buffer: Buffer.from(""),
-      stream: null as any,
-      location: "https://s3/test.jpg",
-      key: "test.jpg",
-      ...overrides
-    });
+    const createMockFile = (overrides: any = {}) => {
+      const name = overrides.originalname || `test-${Date.now()}-${Math.floor(Math.random() * 1000)}.jpg`;
+      const filePath = path.join(os.tmpdir(), name);
+      
+      let magic = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0]); // jpg
+      if (name.includes(".mp4")) magic = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6D, 0x70, 0x34, 0x32]);
+      else if (name.includes(".png")) magic = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+      else if (name.includes(".webp")) magic = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50]);
+
+      fs.writeFileSync(filePath, magic);
+
+      return {
+        fieldname: "files",
+        originalname: name,
+        encoding: "7bit",
+        mimetype: overrides.mimetype || "image/jpeg",
+        size: overrides.size || 1 * 1024 * 1024,
+        destination: os.tmpdir(),
+        filename: name,
+        path: filePath,
+        buffer: Buffer.from(""),
+        stream: null as any,
+        ...overrides
+      } as any;
+    };
 
     it("should process valid upload with 1 video and 3 images", async () => {
       const files = [
         createMockFile({ mimetype: "video/mp4", originalname: "v.mp4" }),
         createMockFile({ mimetype: "image/jpeg", originalname: "i1.jpg" }),
-        createMockFile({ mimetype: "image/png", originalname: "i2.png" }),
-        createMockFile({ mimetype: "image/webp", originalname: "i3.webp" })
+        createMockFile({ mimetype: "image/jpeg", originalname: "i2.jpg" }),
+        createMockFile({ mimetype: "image/jpeg", originalname: "i3.jpg" })
       ];
 
-      const result = await processProductMediaUpload(files);
+      const result = await processProductMediaUpload(files, testUser.id, enterpriseId);
 
       expect(result).toHaveLength(4);
       expect(result[0].type).toBe("VIDEO");
       expect(result[1].type).toBe("FOTO");
-      expect(s3.send).not.toHaveBeenCalled(); // No rollback
+      expect(s3.send).toHaveBeenCalledTimes(4); // 4 uploads
     });
 
     it("should throw error if 0 files", async () => {
-      await expect(processProductMediaUpload([])).rejects.toThrow("Obrigatório pelo menos 1 arquivo");
+      await expect(processProductMediaUpload([], testUser.id, enterpriseId)).rejects.toThrow("Obrigatório pelo menos 1 arquivo");
     });
 
-    it("should throw error and rollback S3 if more than 1 video", async () => {
+    it("should throw error if more than 1 video", async () => {
       const files = [
         createMockFile({ mimetype: "video/mp4", originalname: "v1.mp4" }),
         createMockFile({ mimetype: "video/mp4", originalname: "v2.mp4" }),
       ];
 
-      await expect(processProductMediaUpload(files)).rejects.toThrow("Apenas 1 vídeo é permitido");
-      expect(s3.send).toHaveBeenCalled(); // rollback DeleteObjectsCommand
+      await expect(processProductMediaUpload(files, testUser.id, enterpriseId)).rejects.toThrow("Apenas 1 vídeo é permitido");
+      expect(s3.send).not.toHaveBeenCalled();
     });
 
     it("should throw error if more than 3 images", async () => {
       const files = [
-        createMockFile(), createMockFile(), createMockFile(), createMockFile()
+        createMockFile({ originalname: "1.jpg" }), createMockFile({ originalname: "2.jpg" }), createMockFile({ originalname: "3.jpg" }), createMockFile({ originalname: "4.jpg" })
       ];
 
-      await expect(processProductMediaUpload(files)).rejects.toThrow("No máximo 3 imagens são permitidas");
+      await expect(processProductMediaUpload(files, testUser.id, enterpriseId)).rejects.toThrow("No máximo 3 imagens são permitidas");
     });
 
     it("should throw error if image size > 5MB", async () => {
       const files = [
-        createMockFile({ size: 6 * 1024 * 1024 })
+        createMockFile({ size: 6 * 1024 * 1024, originalname: "1.jpg" })
       ];
 
-      await expect(processProductMediaUpload(files)).rejects.toThrow("excede o limite de 5MB");
+      await expect(processProductMediaUpload(files, testUser.id, enterpriseId)).rejects.toThrow("excede o limite de 5MB");
     });
 
     it("should throw error if video size > 20MB", async () => {
       const files = [
-        createMockFile({ mimetype: "video/mp4", size: 21 * 1024 * 1024 })
+        createMockFile({ mimetype: "video/mp4", size: 21 * 1024 * 1024, originalname: "v1.mp4" })
       ];
 
-      await expect(processProductMediaUpload(files)).rejects.toThrow("excede o limite de 20MB");
+      await expect(processProductMediaUpload(files, testUser.id, enterpriseId)).rejects.toThrow("excede o limite de 20MB");
+    });
+
+    it("should rollback S3 if one of the parallel uploads fails", async () => {
+      // 1 successful, 1 failed
+      jest.spyOn(s3, "send")
+        .mockResolvedValueOnce({} as never)
+        .mockRejectedValueOnce(new Error("AWS Mock Error") as never);
+
+      const files = [
+        createMockFile({ mimetype: "image/jpeg", originalname: "i1.jpg" }),
+        createMockFile({ mimetype: "image/jpeg", originalname: "i2.jpg" })
+      ];
+
+      await expect(processProductMediaUpload(files, testUser.id, enterpriseId)).rejects.toThrow("Erro durante o upload para a nuvem. Processo cancelado.");
+      
+      // Should have called s3.send 3 times:
+      // 2x PutObjectCommand
+      // 1x DeleteObjectsCommand
+      expect(s3.send).toHaveBeenCalledTimes(3);
     });
   });
 

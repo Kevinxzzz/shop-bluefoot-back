@@ -26,6 +26,18 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Safety guard: prevent accidental cleanup of non-test databases
+  const databaseUrl = process.env.DATABASE_URL || "";
+  if (
+    process.env.NODE_ENV !== "test" ||
+    !databaseUrl.includes("test")
+  ) {
+    throw new Error(
+      "Database cleanup is allowed only on test databases. " +
+      "Ensure NODE_ENV=test and DATABASE_URL points to a test database."
+    );
+  }
+
   const deleteProductMedia = prisma.productMedia.deleteMany();
   const deleteProductCategory = prisma.productCategory.deleteMany();
   const deleteProducts = prisma.product.deleteMany();
