@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
 import { AppError } from "../errors/AppError.js";
+import multer from "multer";
 
 export function errorHandler(
   err: Error,
@@ -18,6 +19,17 @@ export function errorHandler(
     return response.status(400).json({
       error: "Erro de validação",
       details: err.issues,
+    });
+  }
+
+  if (err instanceof multer.MulterError) {
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return response.status(400).json({
+        error: "Arquivo excede o tamanho máximo permitido para este upload.",
+      });
+    }
+    return response.status(400).json({
+      error: `Erro no upload: ${err.message}`,
     });
   }
 

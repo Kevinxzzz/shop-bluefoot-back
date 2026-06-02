@@ -1,5 +1,13 @@
 import { beforeAll, afterAll } from "@jest/globals";
-import "dotenv/config";
+import dotenv from "dotenv";
+import path from "path";
+import fs from "fs";
+
+const envPath = fs.existsSync(path.resolve(process.cwd(), ".env.test"))
+  ? path.resolve(process.cwd(), ".env.test")
+  : path.resolve(process.cwd(), ".env");
+
+dotenv.config({ path: envPath });
 import { prisma } from "../shared/database/prisma.js";
 
 beforeAll(async () => {
@@ -18,6 +26,18 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Safety guard: prevent accidental cleanup of non-test databases
+  const databaseUrl = process.env.DATABASE_URL || "";
+  if (
+    process.env.NODE_ENV !== "test" ||
+    !databaseUrl.includes("test")
+  ) {
+    throw new Error(
+      "Database cleanup is allowed only on test databases. " +
+      "Ensure NODE_ENV=test and DATABASE_URL points to a test database."
+    );
+  }
+
   const deleteProductMedia = prisma.productMedia.deleteMany();
   const deleteProductCategory = prisma.productCategory.deleteMany();
   const deleteProducts = prisma.product.deleteMany();

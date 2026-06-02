@@ -32,6 +32,7 @@ describe("Enterprise Module", () => {
   const validEnterpriseData = {
     document: "12345678901234",
     name: "Empresa de Teste",
+    phoneNumber: "11999999999",
     fantasyName: "Teste LTDA",
     contactLink: "https://wa.me/5511999999999",
     userName: "Admin Teste",
@@ -178,7 +179,7 @@ describe("Enterprise Module", () => {
 
       sellerToken = jwt.sign(
         { userId: seller.id, role: "SELLER", enterpriseId },
-        process.env.JWT_SECRET || "test",
+        env.JWT_SECRET,
         { expiresIn: "1d", algorithm: "HS256" }
       );
     });
@@ -234,7 +235,7 @@ describe("Enterprise Module", () => {
 
       sellerToken = jwt.sign(
         { userId: seller.id, role: "SELLER", enterpriseId },
-        process.env.JWT_SECRET || "test",
+        env.JWT_SECRET,
         { expiresIn: "1d", algorithm: "HS256" }
       );
     });

@@ -42,6 +42,8 @@ model User {
   name          String
   email         String                  @unique
   password      String
+  profileImageUrl String?
+  profileImageKey String?
   contactLink   String?                 @unique @map("link_contact")
   roleId        String                  @map("role_id")
   enterpriseId  String                  @map("enterprise_id")
@@ -129,6 +131,7 @@ model ProductCategory {
 model ProductMedia {
   id        String    @id @default(uuid())
   url       String
+  key       String
   type      MediaType
   isMain    Boolean   @default(false) @map("is_main")
   order     Int       @default(0) @map("order")

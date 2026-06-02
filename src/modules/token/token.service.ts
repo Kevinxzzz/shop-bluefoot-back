@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { prisma } from "../../shared/database/prisma.js";
 import { AppError } from "../../shared/errors/AppError.js";
+import { env } from "../../shared/config/env.js";
 
 interface CreateTokenData {
   maxUses: number;
@@ -89,7 +90,7 @@ export async function listTokens(enterpriseId: string, page: number = 1, limit: 
     return {
       id: t.id,
       token: t.token,
-      inviteUrl: `${process.env.FRONTEND_URL || "http://localhost:3000"}/convite/${t.token}`,
+      inviteUrl: `${env.FRONTEND_URL}/convite/${t.token}`,
       maxUses: t.maxUses,
       createdAt: t.createdAt,
       expiredAt: t.expiredAt,
