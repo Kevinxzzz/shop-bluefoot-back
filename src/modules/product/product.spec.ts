@@ -287,3 +287,178 @@ describe("Product Service - Create Product", () => {
     expect(mediaInDb[2].isMain).toBe(false);
   });
 });
+
+import { 
+  getEnterpriseProducts,
+  getUserProducts,
+  updateProduct,
+  updateProductMedia,
+  deleteProduct
+} from "./product.service.js";
+
+import { getAuthorizedProduct } from "./product.authorization.js";
+
+describe("Product Service - CRUD Operations", () => {
+  const mockEnterpriseId = "ent-crud-123";
+  const mockAdminId = "admin-crud-123";
+  const mockSellerId = "seller-crud-123";
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+
+    await prisma.productMedia.deleteMany();
+    await prisma.productCategory.deleteMany();
+    await prisma.product.deleteMany();
+    await prisma.category.deleteMany();
+    await prisma.user.deleteMany();
+    await prisma.userRole.deleteMany();
+    await prisma.enterprise.deleteMany();
+
+    await prisma.enterprise.create({
+      data: {
+        id: mockEnterpriseId,
+        cnpj: "98765432109876",
+        name: "Enterprise CRUD",
+        phoneNumber: "11988888888",
+      },
+    });
+
+    const roleAdmin = await prisma.userRole.create({
+      data: { role: "ADMIN_CRUD", description: "Admin test" }
+    });
+    
+    const roleSeller = await prisma.userRole.create({
+      data: { role: "SELLER_CRUD", description: "Seller test" }
+    });
+
+    await prisma.user.createMany({
+      data: [
+        {
+          id: mockAdminId,
+          name: "Admin",
+          email: "admincrud@mail.com",
+          password: "password123",
+          roleId: roleAdmin.id,
+          enterpriseId: mockEnterpriseId,
+        },
+        {
+          id: mockSellerId,
+          name: "Seller",
+          email: "sellercrud@mail.com",
+          password: "password123",
+          roleId: roleSeller.id,
+          enterpriseId: mockEnterpriseId,
+        }
+      ]
+    });
+  });
+
+  it("should enforce authorization correctly (getAuthorizedProduct)", async () => {
+    const product = await prisma.product.create({
+      data: {
+        name: "Test Prod",
+        userId: mockSellerId,
+        enterpriseId: mockEnterpriseId,
+      }
+    });
+
+    // Admin reading: Success
+    const p1 = await getAuthorizedProduct(product.id, { userId: mockAdminId, role: "ADMIN", enterpriseId: mockEnterpriseId }, "read");
+    expect(p1.id).toBe(product.id);
+
+    // Admin updating: Error
+    await expect(
+      getAuthorizedProduct(product.id, { userId: mockAdminId, role: "ADMIN", enterpriseId: mockEnterpriseId }, "update")
+    ).rejects.toThrow("Acesso negado para edição");
+
+    // Admin deleting: Success
+    const p3 = await getAuthorizedProduct(product.id, { userId: mockAdminId, role: "ADMIN", enterpriseId: mockEnterpriseId }, "delete");
+    expect(p3.id).toBe(product.id);
+
+    // Seller updating own: Success
+    const p4 = await getAuthorizedProduct(product.id, { userId: mockSellerId, role: "SELLER", enterpriseId: mockEnterpriseId }, "update");
+    expect(p4.id).toBe(product.id);
+
+    // Other seller reading: Error
+    await expect(
+      getAuthorizedProduct(product.id, { userId: "other", role: "SELLER", enterpriseId: mockEnterpriseId }, "read")
+    ).rejects.toThrow("Acesso negado para leitura");
+  });
+
+  it("should paginate getEnterpriseProducts and include owner user", async () => {
+    for(let i=0; i < 25; i++) {
+      await prisma.product.create({
+        data: { name: `Prod ${i}`, userId: mockSellerId, enterpriseId: mockEnterpriseId }
+      });
+    }
+
+    const res = await getEnterpriseProducts(mockEnterpriseId, { page: 2, limit: 10 }, "ADMIN");
+    expect(res.totalItems).toBe(25);
+    expect(res.totalPages).toBe(3);
+    expect(res.products.length).toBe(10);
+    expect(res.page).toBe(2);
+    expect(res.products[0].user).toBeDefined();
+    expect(res.products[0].user.name).toBe("Seller");
+  });
+
+  it("should update product data and categories via transaction", async () => {
+    const cat1 = await prisma.category.create({ data: { name: "C1", slug: "c1", enterpriseId: mockEnterpriseId } });
+    const cat2 = await prisma.category.create({ data: { name: "C2", slug: "c2", enterpriseId: mockEnterpriseId } });
+    
+    const product = await prisma.product.create({
+      data: { name: "P1", userId: mockSellerId, enterpriseId: mockEnterpriseId }
+    });
+
+    const updated = await updateProduct(
+      product.id, 
+      { userId: mockSellerId, role: "SELLER", enterpriseId: mockEnterpriseId },
+      { name: "P1 Updated", price: 200, categoryIds: [cat1.id, cat2.id] }
+    );
+
+    expect(updated?.name).toBe("P1 Updated");
+    expect(updated?.price).toBe(200);
+    expect(updated?.categories.length).toBe(2);
+  });
+
+  it("should update media, handle isMain fallback, and limit to max 3 photos", async () => {
+    jest.spyOn(s3, "send").mockResolvedValue({} as never);
+
+    const product = await prisma.product.create({
+      data: { name: "P_MEDIA", userId: mockSellerId, enterpriseId: mockEnterpriseId }
+    });
+
+    const m1 = await prisma.productMedia.create({
+      data: { url: "http://f1", key: "f1", type: "FOTO", isMain: true, productId: product.id }
+    });
+
+    // Delete m1 and send 1 new photo, it should become main
+    const newMedia = await updateProductMedia(
+      product.id,
+      { userId: mockSellerId, role: "SELLER", enterpriseId: mockEnterpriseId },
+      { keepMediaIds: [] },
+      [{ url: "http://new", key: "temp/new", type: "FOTO" }]
+    );
+
+    expect(newMedia?.media.length).toBe(1);
+    expect(newMedia?.media[0].isMain).toBe(true);
+    expect(s3.send).toHaveBeenCalled(); // Copy & Delete
+  });
+
+  it("should not revert DB if S3 fails during DELETE", async () => {
+    jest.spyOn(s3, "send").mockRejectedValue(new Error("AWS ERROR") as never);
+
+    const product = await prisma.product.create({
+      data: { name: "P_DEL", userId: mockSellerId, enterpriseId: mockEnterpriseId }
+    });
+    await prisma.productMedia.create({
+      data: { url: "http://del", key: "del_key", type: "FOTO", isMain: true, productId: product.id }
+    });
+
+    // Does not throw
+    await expect(deleteProduct(product.id, { userId: mockAdminId, role: "ADMIN", enterpriseId: mockEnterpriseId })).resolves.toBeUndefined();
+
+    const check = await prisma.product.findUnique({ where: { id: product.id } });
+    expect(check).toBeNull(); // It was deleted from DB even if S3 failed
+  });
+});
+

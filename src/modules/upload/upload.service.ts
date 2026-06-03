@@ -1,6 +1,6 @@
 import { prisma } from "../../shared/database/prisma.js";
 import { AppError } from "../../shared/errors/AppError.js";
-import { DeleteObjectCommand, DeleteObjectsCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, DeleteObjectsCommand, PutObjectCommand, CopyObjectCommand } from "@aws-sdk/client-s3";
 import { s3 } from "../../shared/config/s3.js";
 import { env } from "../../shared/config/env.js";
 import type { UploadImageProfileInput } from "./upload.schema.js";
@@ -179,4 +179,73 @@ export async function processProductMediaUpload(files: Express.Multer.File[], us
         }));
      }
   }
+}
+
+export async function rollbackProductMediaFiles(keys: string[]) {
+  if (keys.length === 0) return;
+  try {
+    await s3.send(
+      new DeleteObjectsCommand({
+        Bucket: env.AWS_BUCKET_NAME!,
+        Delete: {
+          Objects: keys.map((Key) => ({ Key })),
+        },
+      })
+    );
+  } catch (error) {
+    console.error("Failed to rollback product media from S3:", error);
+  }
+}
+
+export async function deleteProductMediaFiles(keys: string[]) {
+  if (keys.length === 0) return;
+  try {
+    await s3.send(
+      new DeleteObjectsCommand({
+        Bucket: env.AWS_BUCKET_NAME!,
+        Delete: { Objects: keys.map((Key) => ({ Key })) },
+      })
+    );
+  } catch (err) {
+    console.error("Failed to delete product media from S3:", err, keys);
+    throw new AppError("Falha ao deletar arquivos de mídia na AWS.", 500);
+  }
+}
+
+export async function moveProductMediaFiles(
+  files: Array<{ url: string; key: string; type: "FOTO" | "VIDEO" }>,
+  enterpriseId: string,
+  productId: string
+) {
+  const uploadPromises = files.map(async (m) => {
+    const fileName = m.key.split("/").pop();
+    const newKey = `enterprise/${enterpriseId}/products/${productId}/${fileName}`;
+    const newUrl = m.url.replace(m.key, newKey);
+
+    await s3.send(
+      new CopyObjectCommand({
+        Bucket: env.AWS_BUCKET_NAME!,
+        CopySource: `${env.AWS_BUCKET_NAME}/${m.key}`,
+        Key: newKey,
+      })
+    );
+
+    return { ...m, originalKey: m.key, newKey, newUrl };
+  });
+
+  const results = await Promise.allSettled(uploadPromises);
+
+  const movedKeys = results
+    .filter((r): r is PromiseFulfilledResult<any> => r.status === "fulfilled")
+    .map((r) => r.value.newKey);
+
+  const hasError = results.some((r) => r.status === "rejected");
+
+  if (hasError) {
+    await rollbackProductMediaFiles(movedKeys);
+    throw new AppError("Erro ao processar mídias no provedor de armazenamento.", 500);
+  }
+
+  const successfullyMoved = results.map((r: any) => r.value);
+  return successfullyMoved;
 }
