@@ -3,7 +3,7 @@ import { prisma } from "../../shared/database/prisma.js";
 import { AppError } from "../../shared/errors/AppError.js";
 import type { CreateProductInput, UpdateProductInput } from "./product.schema.js";
 import { randomUUID } from "node:crypto";
-import { Prisma } from "../../generated/prisma/index.js";
+import { Prisma } from "@prisma/client";
 
 // Módulos externos refatorados
 import { moveProductMediaFiles, deleteProductMediaFiles } from "../upload/upload.service.js";
