@@ -5,6 +5,7 @@ import { productMediaUpload } from "../../shared/config/multer/productMediaUploa
 import { 
   postProduct,
   getEnterpriseProductsHandler,
+  getPublicProductsHandler,
   getUserProductsHandler,
   getProductByIdHandler,
   updateProductHandler,
@@ -14,15 +15,18 @@ import {
 
 const productRoutes = Router();
 
+// Public routes
+productRoutes.get("/enterprise-martins", getPublicProductsHandler);
+
+// Protected routes (must be defined BEFORE /:id to prevent interception)
+productRoutes.get("/enterprise", authMiddleware, getEnterpriseProductsHandler);
+productRoutes.get("/user/:userId", authMiddleware, getUserProductsHandler);
+productRoutes.post("/", authMiddleware, postProduct);
+productRoutes.put("/:id", authMiddleware, updateProductHandler);
+productRoutes.put("/:id/media", authMiddleware, productMediaUpload.array("files"), updateProductMediaHandler);
+productRoutes.delete("/:id", authMiddleware, deleteProductHandler);
+
+// Public dynamic route (must be at the bottom)
 productRoutes.get("/:id", optionalAuthMiddleware, getProductByIdHandler);
-
-productRoutes.use(authMiddleware);
-
-productRoutes.post("/", postProduct);
-productRoutes.get("/", getEnterpriseProductsHandler);
-productRoutes.get("/user/:userId", getUserProductsHandler);
-productRoutes.put("/:id", updateProductHandler);
-productRoutes.put("/:id/media", productMediaUpload.array("files"), updateProductMediaHandler);
-productRoutes.delete("/:id", deleteProductHandler);
 
 export { productRoutes };

@@ -4,6 +4,22 @@ import { createCategorySchema, queryCategorySchema, updateCategorySchema } from 
 import { createCategory, deleteCategoryPermanently, listCategories, archiveCategory, restoreCategory, updateCategory } from "./category.service.js";
 import { z } from "zod";
 
+export const getPublicCategoriesController = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsedQuery = queryCategorySchema.parse(req.query);
+
+    const enterpriseId = process.env.ID_ENTERPRISE_MARTINS;
+    if (!enterpriseId) {
+      throw new AppError("A loja pública não está configurada corretamente (Falta ID_ENTERPRISE_MARTINS).", 500);
+    }
+
+    const result = await listCategories(enterpriseId, parsedQuery);
+    return res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const createCategoryController = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const parsedData = createCategorySchema.parse(req.body);

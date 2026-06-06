@@ -246,3 +246,12 @@ export async function updateEnterprise({ enterpriseId, data }: { enterpriseId: s
 
   return result;
 }
+
+export async function getEnterpriseFirstLink(enterpriseId: string) {
+  const linkGroup = await prisma.enterpriseLinkGroup.findFirst({
+    where: { enterpriseId },
+    select: { link: true },
+  });
+
+  return { link: linkGroup?.link ?? null };
+}

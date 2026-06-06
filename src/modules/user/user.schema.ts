@@ -16,3 +16,10 @@ export const updateProfileSchema = z.object({
   email: z.string().email("Email inválido").optional(),
   contactLink: z.string().max(255).optional(),
 }).strict();
+
+export const getPublicUserByIdSchema = z.object({
+  params: z.object({
+    id: z.string().uuid("ID inválido"),
+  }),
+});
+

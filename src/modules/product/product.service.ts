@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { prisma } from "../../shared/database/prisma.js";
 import { AppError } from "../../shared/errors/AppError.js";
 import type { CreateProductInput, UpdateProductInput } from "./product.schema.js";
@@ -150,30 +151,57 @@ export async function createProduct(
   }
 }
 
-export async function getEnterpriseProducts(
-  enterpriseId: string,
-  query: { page: number; limit: number },
-  userRole: string
+export async function getEnterpriseProductsPublic(
+  query: z.infer<typeof import("./product.schema.js").getProductsQuerySchema>,
+  enterpriseId?: string
 ) {
-  // Validate Role at service layer
-  validateEnterpriseReadPermission(userRole);
-
   const skip = (query.page - 1) * query.limit;
+
+  const where: Prisma.ProductWhereInput = {
+    deletedAt: null,
+    ...(enterpriseId && { enterpriseId }),
+    ...(query.search && {
+      name: {
+        contains: query.search,
+        mode: "insensitive"
+      }
+    }),
+    ...(query.sellerId && query.sellerId.length > 0 && {
+      userId: { in: query.sellerId }
+    }),
+    ...(query.categoryId && query.categoryId.length > 0 && {
+      categories: {
+        some: {
+          categoryId: { in: query.categoryId }
+        }
+      }
+    }),
+    ...((query.minPrice !== undefined || query.maxPrice !== undefined) && {
+      price: {
+        ...(query.minPrice !== undefined && { gte: query.minPrice }),
+        ...(query.maxPrice !== undefined && { lte: query.maxPrice })
+      }
+    })
+  };
 
   const [products, totalItems] = await Promise.all([
     prisma.product.findMany({
-      where: { enterpriseId, deletedAt: null },
-      orderBy: { createdAt: "desc" },
+      where,
+      orderBy: { countViews: "desc" },
       skip,
       take: query.limit,
       include: {
-        categories: true,
+        categories: {
+          include: {
+            category: true,
+          },
+        },
         media: true,
-        user: { select: { id: true, name: true } },
+        user: { select: { id: true, name: true, profileImageUrl: true } },
       },
     }),
     prisma.product.count({
-      where: { enterpriseId, deletedAt: null },
+      where,
     }),
   ]);
 
@@ -204,9 +232,13 @@ export async function getUserProducts(
       skip,
       take: query.limit,
       include: {
-        categories: true,
+        categories: {
+          include: {
+            category: true,
+          },
+        },
         media: true,
-        user: { select: { id: true, name: true } },
+        user: { select: { id: true, name: true, profileImageUrl: true } },
       },
     }),
     prisma.product.count({

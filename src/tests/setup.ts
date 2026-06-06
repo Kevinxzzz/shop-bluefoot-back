@@ -7,8 +7,8 @@ const envPath = fs.existsSync(path.resolve(process.cwd(), ".env.test"))
   ? path.resolve(process.cwd(), ".env.test")
   : path.resolve(process.cwd(), ".env");
 
-dotenv.config({ path: envPath });
-import { prisma } from "../shared/database/prisma.js";
+dotenv.config({ path: envPath, quiet: true });
+import { prisma, pool } from "../shared/database/prisma.js";
 
 beforeAll(async () => {
   // Garantir que as roles existem antes de rodar os testes
@@ -58,4 +58,5 @@ afterAll(async () => {
     deleteEnterprises,
   ]);
   await prisma.$disconnect();
+  await pool.end();
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "@jest/globals";
+import { describe, it, expect, beforeEach, afterEach } from "@jest/globals";
 import request from "supertest";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
@@ -383,4 +383,208 @@ describe("User Module", () => {
       expect(response.body.email).toBe(sellerUser.email);
     });
   });
+
+  describe("GET /users/enterprise-martins - Public Users Route", () => {
+    let originalId: string;
+    beforeEach(() => {
+      // Mock env object directly instead of process.env
+      originalId = env.ID_ENTERPRISE_MARTINS;
+      env.ID_ENTERPRISE_MARTINS = enterpriseId;
+    });
+
+    afterEach(() => {
+      env.ID_ENTERPRISE_MARTINS = originalId;
+    });
+
+    it("should return users of the Martins enterprise with public fields only", async () => {
+      // Adicionar produto para o admin (deletedAt: null) -> account: 1
+      await prisma.product.create({
+        data: {
+          name: "Produto 1",
+          price: 100,
+          userId: adminUser.id,
+          enterpriseId,
+        }
+      });
+
+      // Adicionar produto soft-deleted para o admin (não deve contar)
+      await prisma.product.create({
+        data: {
+          name: "Produto Deletado",
+          price: 50,
+          userId: adminUser.id,
+          enterpriseId,
+          deletedAt: new Date(),
+        }
+      });
+
+      // O seller (criado no beforeEach principal) não tem produtos -> account: 0
+      
+      const response = await request(app).get("/users/enterprise-martins");
+
+      expect(response.status).toBe(200);
+      expect(Array.isArray(response.body)).toBe(true);
+      
+      // Tem 2 usuários (admin e seller)
+      expect(response.body.length).toBe(2);
+
+      const admin = response.body.find((u: any) => u.id === adminUser.id);
+      expect(admin).toBeDefined();
+      expect(admin.name).toBe(adminUser.name);
+      expect(admin.imageUrl).toBe(adminUser.profileImageUrl || null);
+      expect(admin.productsCount).toBe(1);
+      
+      // Validar que NENHUM campo sensível foi retornado
+      expect(admin.email).toBeUndefined();
+      expect(admin.password).toBeUndefined();
+      expect(admin.roleId).toBeUndefined();
+      expect(admin.enterpriseId).toBeUndefined();
+      expect(admin.contactLink).toBeUndefined();
+      expect(admin.createdAt).toBeUndefined();
+      expect(admin.deletedAt).toBeUndefined();
+
+      const seller = response.body.find((u: any) => u.id === sellerUser.id);
+      expect(seller).toBeDefined();
+      expect(seller.productsCount).toBe(0);
+    });
+
+    it("should return empty array if enterprise has no users (or doesn't exist)", async () => {
+      env.ID_ENTERPRISE_MARTINS = "invalid-or-empty-enterprise-id";
+
+      const response = await request(app).get("/users/enterprise-martins");
+
+      expect(response.status).toBe(200);
+      expect(Array.isArray(response.body)).toBe(true);
+      expect(response.body.length).toBe(0);
+    });
+
+    it("should not return users from other enterprises", async () => {
+      const otherEnterprise = await prisma.enterprise.create({
+        data: { cnpj: "00000000000002", name: "Other", phoneNumber: "666666666" },
+      });
+      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
+      
+      await prisma.user.create({
+        data: {
+          name: "Other User",
+          email: "other_user_2@test.com",
+          password: "pwd",
+          roleId: sellerRole!.id,
+          enterpriseId: otherEnterprise.id,
+        },
+      });
+
+      const response = await request(app).get("/users/enterprise-martins");
+
+      expect(response.status).toBe(200);
+      // Deve retornar apenas os 2 da empresa martins
+      expect(response.body.length).toBe(2);
+      const otherUser = response.body.find((u: any) => u.email === "other_user_2@test.com");
+      expect(otherUser).toBeUndefined();
+    });
+    
+    it("should return 500 if ID_ENTERPRISE_MARTINS is not set in env", async () => {
+      (env as any).ID_ENTERPRISE_MARTINS = "";
+
+      const response = await request(app).get("/users/enterprise-martins");
+
+      expect(response.status).toBe(500);
+      expect(response.body.error).toBe("A loja pública não está configurada corretamente (Falta ID_ENTERPRISE_MARTINS).");
+    });
+  });
+
+  describe("GET /users/enterprise-martins/:id - Public User by ID", () => {
+    let originalId: string;
+    beforeEach(() => {
+      originalId = env.ID_ENTERPRISE_MARTINS;
+      env.ID_ENTERPRISE_MARTINS = enterpriseId;
+    });
+
+    afterEach(() => {
+      env.ID_ENTERPRISE_MARTINS = originalId;
+    });
+
+    it("should return public details of a seller and their active products", async () => {
+      await prisma.product.create({
+        data: {
+          name: "Produto Ativo",
+          price: 100,
+          userId: sellerUser.id,
+          enterpriseId,
+        }
+      });
+
+      await prisma.product.create({
+        data: {
+          name: "Produto Deletado",
+          price: 50,
+          userId: sellerUser.id,
+          enterpriseId,
+          deletedAt: new Date(),
+        }
+      });
+
+      const response = await request(app).get(`/users/enterprise-martins/${sellerUser.id}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.id).toBe(sellerUser.id);
+      expect(response.body.name).toBe(sellerUser.name);
+      expect(Array.isArray(response.body.products)).toBe(true);
+      expect(response.body.products.length).toBe(1);
+      expect(response.body.products[0].name).toBe("Produto Ativo");
+
+      expect(response.body.email).toBeUndefined();
+      expect(response.body.password).toBeUndefined();
+      expect(response.body.roleId).toBeUndefined();
+      expect(response.body.enterpriseId).toBeUndefined();
+      expect(response.body.createdAt).toBeUndefined();
+      expect(response.body.deletedAt).toBeUndefined();
+    });
+
+    it("should return 404 if the seller does not exist", async () => {
+      const randomUuid = "123e4567-e89b-12d3-a456-426614174000";
+      const response = await request(app).get(`/users/enterprise-martins/${randomUuid}`);
+      expect(response.status).toBe(404);
+      expect(response.body.error).toBe("Vendedor não encontrado");
+    });
+
+    it("should return 404 if the seller belongs to another enterprise", async () => {
+      const otherEnterprise = await prisma.enterprise.create({
+        data: { cnpj: "00000000000003", name: "Other", phoneNumber: "555555555" },
+      });
+      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
+      
+      const otherUser = await prisma.user.create({
+        data: {
+          name: "Other User",
+          email: "other_user_3@test.com",
+          password: "pwd",
+          roleId: sellerRole!.id,
+          enterpriseId: otherEnterprise.id,
+        },
+      });
+
+      const response = await request(app).get(`/users/enterprise-martins/${otherUser.id}`);
+      expect(response.status).toBe(404);
+      expect(response.body.error).toBe("Vendedor não encontrado");
+    });
+
+    it("should return 404 if the seller is soft deleted", async () => {
+      await prisma.user.update({
+        where: { id: sellerUser.id },
+        data: { deletedAt: new Date() },
+      });
+
+      const response = await request(app).get(`/users/enterprise-martins/${sellerUser.id}`);
+      expect(response.status).toBe(404);
+      expect(response.body.error).toBe("Vendedor não encontrado");
+    });
+
+    it("should return 400 if the ID is not a valid UUID", async () => {
+      const response = await request(app).get(`/users/enterprise-martins/not-a-uuid`);
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain("Erro de validação");
+    });
+  });
 });
+

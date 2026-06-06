@@ -20,6 +20,11 @@ export type CreateProductInput = z.infer<typeof createProductSchema>;
 export const getProductsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(20).default(20),
+  search: z.string().optional(),
+  categoryId: z.union([z.string().uuid("ID de categoria inválido"), z.array(z.string().uuid("ID de categoria inválido"))]).transform(v => Array.isArray(v) ? v : [v]).optional(),
+  sellerId: z.union([z.string().uuid("ID de vendedor inválido"), z.array(z.string().uuid("ID de vendedor inválido"))]).transform(v => Array.isArray(v) ? v : [v]).optional(),
+  minPrice: z.coerce.number().min(0).optional(),
+  maxPrice: z.coerce.number().min(0).optional(),
 });
 
 export const updateProductSchema = z.object({

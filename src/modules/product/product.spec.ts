@@ -289,7 +289,7 @@ describe("Product Service - Create Product", () => {
 });
 
 import { 
-  getEnterpriseProducts,
+  getEnterpriseProductsPublic,
   getUserProducts,
   updateProduct,
   updateProductMedia,
@@ -392,7 +392,7 @@ describe("Product Service - CRUD Operations", () => {
       });
     }
 
-    const res = await getEnterpriseProducts(mockEnterpriseId, { page: 2, limit: 10 }, "ADMIN");
+    const res = await getEnterpriseProductsPublic({ page: 2, limit: 10 }, mockEnterpriseId);
     expect(res.totalItems).toBe(25);
     expect(res.totalPages).toBe(3);
     expect(res.products.length).toBe(10);
@@ -454,11 +454,14 @@ describe("Product Service - CRUD Operations", () => {
       data: { url: "http://del", key: "del_key", type: "FOTO", isMain: true, productId: product.id }
     });
 
+    const consoleSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
     // Does not throw
     await expect(deleteProduct(product.id, { userId: mockAdminId, role: "ADMIN", enterpriseId: mockEnterpriseId })).resolves.toBeUndefined();
 
     const check = await prisma.product.findUnique({ where: { id: product.id } });
     expect(check).toBeNull(); // It was deleted from DB even if S3 failed
+    consoleSpy.mockRestore();
   });
 });
 

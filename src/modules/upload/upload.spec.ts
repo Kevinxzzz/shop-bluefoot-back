@@ -153,12 +153,15 @@ describe("Upload Service", () => {
         createMockFile({ mimetype: "image/jpeg", originalname: "i2.jpg" })
       ];
 
+      const consoleSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
       await expect(processProductMediaUpload(files, testUser.id, enterpriseId)).rejects.toThrow("Erro durante o upload para a nuvem. Processo cancelado.");
       
       // Should have called s3.send 3 times:
       // 2x PutObjectCommand
       // 1x DeleteObjectsCommand
       expect(s3.send).toHaveBeenCalledTimes(3);
+      consoleSpy.mockRestore();
     });
   });
 
@@ -228,6 +231,8 @@ describe("Upload Service", () => {
         key: "new-avatar-2.jpg",
       };
 
+      const consoleSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
       const result = await updateProfileImage(testUser.id, data);
 
       expect(result.url).toBe(data.location);
@@ -236,6 +241,7 @@ describe("Upload Service", () => {
         where: { id: testUser.id },
       });
       expect(updatedUser?.profileImageKey).toBe(data.key);
+      consoleSpy.mockRestore();
     });
   });
 });
