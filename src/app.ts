@@ -1,5 +1,6 @@
 import express from "express";
 import helmet from "helmet";
+import cookieParser from "cookie-parser";
 import { env } from "./shared/config/env.js";
 import { corsConfig } from "./shared/security/cors.js";
 import { authRoutes } from "./modules/auth/auth.router.js";
@@ -25,6 +26,7 @@ app.use(helmet({
 app.use(corsConfig);
 
 app.use(express.json());
+app.use(cookieParser());
 
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });

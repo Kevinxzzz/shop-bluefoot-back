@@ -462,3 +462,238 @@ describe("Product Service - CRUD Operations", () => {
   });
 });
 
+import {
+  getPublicProductById,
+  incrementProductView,
+} from "./product.service.js";
+
+import { app } from "../../app.js";
+import request from "supertest";
+
+describe("Product Service - Public Product Details", () => {
+  const mockEnterpriseId = "ent-public-123";
+  const mockSellerId = "seller-public-123";
+  let testProductId: string;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+
+    await prisma.productMedia.deleteMany();
+    await prisma.productCategory.deleteMany();
+    await prisma.product.deleteMany();
+    await prisma.category.deleteMany();
+    await prisma.user.deleteMany();
+    await prisma.userRole.deleteMany();
+    await prisma.enterprise.deleteMany();
+
+    await prisma.enterprise.create({
+      data: {
+        id: mockEnterpriseId,
+        cnpj: "11111111111111",
+        name: "Enterprise Public",
+        phoneNumber: "11977777777",
+      },
+    });
+
+    const role = await prisma.userRole.create({
+      data: { role: "SELLER_PUBLIC", description: "Seller test" },
+    });
+
+    await prisma.user.create({
+      data: {
+        id: mockSellerId,
+        name: "Seller Public",
+        email: "sellerpublic@mail.com",
+        password: "password123",
+        contactLink: "https://wa.me/5511999999999",
+        roleId: role.id,
+        enterpriseId: mockEnterpriseId,
+      },
+    });
+
+    const category = await prisma.category.create({
+      data: { name: "Cat Public", slug: "cat-public", enterpriseId: mockEnterpriseId },
+    });
+
+    const product = await prisma.product.create({
+      data: {
+        name: "Product Public",
+        description: "Public description",
+        price: 1500,
+        userId: mockSellerId,
+        enterpriseId: mockEnterpriseId,
+      },
+    });
+
+    testProductId = product.id;
+
+    await prisma.productCategory.create({
+      data: { productId: testProductId, categoryId: category.id },
+    });
+
+    await prisma.productMedia.create({
+      data: {
+        url: "https://cdn.example.com/photo.jpg",
+        key: "photo-key",
+        type: "FOTO",
+        isMain: true,
+        order: 0,
+        productId: testProductId,
+      },
+    });
+  });
+
+  // ── Sucesso ──────────────────────────────────────────────
+
+  it("should return public product without authentication", async () => {
+    const product = await getPublicProductById(testProductId);
+
+    expect(product).toBeDefined();
+    expect(product.id).toBe(testProductId);
+    expect(product.name).toBe("Product Public");
+    expect(product.description).toBe("Public description");
+    expect(product.price).toBe(1500);
+    expect(product.user.name).toBe("Seller Public");
+    expect(product.user.contactLink).toBe("https://wa.me/5511999999999");
+    expect(product.categories.length).toBe(1);
+    expect(product.media.length).toBe(1);
+    expect(product.media[0].isMain).toBe(true);
+  });
+
+  it("should not return internal fields in public response", async () => {
+    const product = await getPublicProductById(testProductId);
+
+    const productAsAny = product as any;
+    expect(productAsAny.enterpriseId).toBeUndefined();
+    expect(productAsAny.userId).toBeUndefined();
+    expect(productAsAny.deletedAt).toBeUndefined();
+    expect(productAsAny.createdAt).toBeUndefined();
+    expect(productAsAny.countViews).toBeDefined();
+  });
+
+  // ── Falhas ──────────────────────────────────────────────
+
+  it("should throw 404 for non-existent product", async () => {
+    await expect(
+      getPublicProductById("non-existent-id")
+    ).rejects.toThrow("Produto não encontrado");
+
+    try {
+      await getPublicProductById("non-existent-id");
+    } catch (error) {
+      expect(error).toBeInstanceOf(AppError);
+      expect((error as AppError).statusCode).toBe(404);
+    }
+  });
+
+  it("should not return soft-deleted product", async () => {
+    await prisma.product.update({
+      where: { id: testProductId },
+      data: { deletedAt: new Date() },
+    });
+
+    await expect(
+      getPublicProductById(testProductId)
+    ).rejects.toThrow("Produto não encontrado");
+  });
+
+  // ── Contabilização de Views ──────────────────────────────
+
+  it("should increment countViews on first visit", async () => {
+    const before = await prisma.product.findUnique({ where: { id: testProductId } });
+    expect(before!.countViews).toBe(0);
+
+    await incrementProductView(testProductId);
+
+    const after = await prisma.product.findUnique({ where: { id: testProductId } });
+    expect(after!.countViews).toBe(1);
+  });
+
+  it("should increment countViews atomically", async () => {
+    await incrementProductView(testProductId);
+    await incrementProductView(testProductId);
+    await incrementProductView(testProductId);
+
+    const product = await prisma.product.findUnique({ where: { id: testProductId } });
+    expect(product!.countViews).toBe(3);
+  });
+
+  // ── Testes de Integração (Controller + Cookie) ──────────
+
+  it("should increment view for unauthenticated visitor without cookie", async () => {
+    const res = await request(app)
+      .get(`/products/${testProductId}`)
+      .expect(200);
+
+    expect(res.body.name).toBe("Product Public");
+
+    // Verify cookie was set
+    const cookies = res.headers["set-cookie"];
+    expect(cookies).toBeDefined();
+    const viewCookie = Array.isArray(cookies)
+      ? cookies.find((c: string) => c.includes(`product_view_${testProductId}`))
+      : cookies?.includes(`product_view_${testProductId}`) ? cookies : undefined;
+    expect(viewCookie).toBeDefined();
+    expect(viewCookie).toContain("HttpOnly");
+
+    // Verify view was incremented
+    const product = await prisma.product.findUnique({ where: { id: testProductId } });
+    expect(product!.countViews).toBe(1);
+  });
+
+  it("should NOT increment view on refresh (cookie present)", async () => {
+    // First visit
+    await request(app)
+      .get(`/products/${testProductId}`)
+      .expect(200);
+
+    const after1 = await prisma.product.findUnique({ where: { id: testProductId } });
+    expect(after1!.countViews).toBe(1);
+
+    // Refresh (with cookie)
+    await request(app)
+      .get(`/products/${testProductId}`)
+      .set("Cookie", `product_view_${testProductId}=1`)
+      .expect(200);
+
+    const after2 = await prisma.product.findUnique({ where: { id: testProductId } });
+    expect(after2!.countViews).toBe(1);
+  });
+
+  it("should NOT increment view for authenticated user", async () => {
+    const jwt = await import("jsonwebtoken");
+    const { env } = await import("../../shared/config/env.js");
+    const token = jwt.default.sign({ userId: mockSellerId }, env.JWT_SECRET, { algorithm: "HS256" });
+
+    await request(app)
+      .get(`/products/${testProductId}`)
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+
+    const product = await prisma.product.findUnique({ where: { id: testProductId } });
+    expect(product!.countViews).toBe(0);
+  });
+
+  it("should treat invalid token as unauthenticated visitor", async () => {
+    const res = await request(app)
+      .get(`/products/${testProductId}`)
+      .set("Authorization", "Bearer invalid-token-here")
+      .expect(200);
+
+    // Should have incremented (treated as visitor)
+    const product = await prisma.product.findUnique({ where: { id: testProductId } });
+    expect(product!.countViews).toBe(1);
+
+    // Should have set cookie
+    const cookies = res.headers["set-cookie"];
+    expect(cookies).toBeDefined();
+  });
+
+  it("should return 404 via HTTP for non-existent product", async () => {
+    const res = await request(app)
+      .get("/products/non-existent-id")
+      .expect(404);
+
+    expect(res.body.error).toBe("Produto não encontrado");
+  });
+});

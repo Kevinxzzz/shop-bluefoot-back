@@ -32,7 +32,8 @@ import {
 import {
   getEnterpriseProducts,
   getUserProducts,
-  getProductById,
+  getPublicProductById,
+  incrementProductView,
   updateProduct,
   updateProductMedia,
   deleteProduct
@@ -78,19 +79,29 @@ export const getUserProductsHandler = async (req: Request, res: Response, next: 
 
 export const getProductByIdHandler = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    if (!req.user?.enterpriseId || !req.user?.userId) {
-      throw new AppError("Usuário não autenticado ou sem empresa", 401);
-    }
-
     const { id } = req.params;
     if (!id || typeof id !== "string") throw new AppError("ID do produto ausente", 400);
 
-    const product = await getProductById(id, {
-      userId: req.user.userId,
-      role: req.user.role,
-      enterpriseId: req.user.enterpriseId,
-    });
-    
+    const product = await getPublicProductById(id);
+
+    const isAuthenticated = !!req.user;
+
+    if (!isAuthenticated) {
+      const cookieName = `product_view_${id}`;
+      const hasViewed = !!req.cookies?.[cookieName];
+
+      if (!hasViewed) {
+        await incrementProductView(id);
+
+        res.cookie(cookieName, "1", {
+          maxAge: 24 * 60 * 60 * 1000,
+          httpOnly: true,
+          sameSite: "lax",
+          secure: process.env.NODE_ENV === "production",
+        });
+      }
+    }
+
     return res.status(200).json(product);
   } catch (error) {
     next(error);
@@ -136,7 +147,9 @@ export const updateProductMediaHandler = async (req: Request, res: Response, nex
     const parsedBody = updateProductMediaSchema.parse(req.body);
     const files = req.files as Express.Multer.File[] || [];
 
-    const newFiles = await processProductMediaUpload(files, req.user.userId, req.user.enterpriseId);
+    const newFiles = files.length > 0
+      ? await processProductMediaUpload(files, req.user.userId, req.user.enterpriseId)
+      : [];
 
     const result = await updateProductMedia(
       id,

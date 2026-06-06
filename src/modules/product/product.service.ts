@@ -223,11 +223,47 @@ export async function getUserProducts(
   };
 }
 
-export async function getProductById(
-  id: string,
-  user: { userId: string; role: string; enterpriseId: string }
-) {
-  return getAuthorizedProduct(id, user, "read");
+export async function getPublicProductById(id: string) {
+  const product = await prisma.product.findFirst({
+    where: {
+      id,
+      deletedAt: null,
+    },
+    select: {
+      id: true,
+      name: true,
+      description: true,
+      price: true,
+      countViews: true,
+      categories: {
+        select: {
+          category: {
+            select: { id: true, name: true, slug: true },
+          },
+        },
+      },
+      media: {
+        select: { id: true, url: true, type: true, isMain: true, order: true },
+        orderBy: { order: "asc" as const },
+      },
+      user: {
+        select: { id: true, name: true, contactLink: true, profileImageUrl: true },
+      },
+    },
+  });
+
+  if (!product) {
+    throw new AppError("Produto não encontrado", 404);
+  }
+
+  return product;
+}
+
+export async function incrementProductView(id: string) {
+  await prisma.product.update({
+    where: { id },
+    data: { countViews: { increment: 1 } },
+  });
 }
 
 export async function updateProduct(
@@ -276,7 +312,7 @@ export async function updateProduct(
 
     return tx.product.findUnique({
       where: { id },
-      include: { categories: true, media: true, user: { select: { id: true, name: true } } },
+      include: { categories: true, media: true },
     });
   });
 
