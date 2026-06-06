@@ -2,15 +2,19 @@ import dotenv from "dotenv";
 import path from "path";
 import fs from "fs";
 
-const envPath = process.env.NODE_ENV === "test" && fs.existsSync(path.resolve(process.cwd(), ".env.test"))
-  ? path.resolve(process.cwd(), ".env.test")
-  : path.resolve(process.cwd(), ".env");
+const envPath =
+  process.env.NODE_ENV === "test" &&
+  fs.existsSync(path.resolve(process.cwd(), ".env.test"))
+    ? path.resolve(process.cwd(), ".env.test")
+    : path.resolve(process.cwd(), ".env");
 
-dotenv.config({ path: envPath });
+dotenv.config({ path: envPath, quiet: process.env.NODE_ENV === "test" });
 import { z } from "zod";
 
 const envSchema = z.object({
-  NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  NODE_ENV: z
+    .enum(["development", "production", "test"])
+    .default("development"),
   API_PORT: z.coerce.number().default(3333),
   DATABASE_URL: z.string(),
   JWT_SECRET: z
@@ -22,6 +26,8 @@ const envSchema = z.object({
   "AWS_SECRECT_ACESS-KEY": z.string(),
   AWS_REGION: z.string(),
   AWS_BUCKET_NAME: z.string(),
+  PUBLIC_ENTERPRISE_ID: z.string().optional(),
+  ID_ENTERPRISE_MARTINS: z.string(),
 });
 
 const parsedEnv = envSchema.parse(process.env);
@@ -37,4 +43,6 @@ export const env = {
   AWS_SECRET_ACCESS_KEY: parsedEnv["AWS_SECRECT_ACESS-KEY"],
   AWS_REGION: parsedEnv.AWS_REGION,
   AWS_BUCKET_NAME: parsedEnv.AWS_BUCKET_NAME,
+  PUBLIC_ENTERPRISE_ID: parsedEnv.PUBLIC_ENTERPRISE_ID,
+  ID_ENTERPRISE_MARTINS: parsedEnv.ID_ENTERPRISE_MARTINS,
 };

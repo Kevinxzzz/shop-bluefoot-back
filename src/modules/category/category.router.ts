@@ -7,9 +7,12 @@ import {
   archiveCategoryController,
   restoreCategoryController,
   updateCategoryController,
+  getPublicCategoriesController,
 } from "./category.controller.js";
 
 const categoryRoutes = Router();
+
+categoryRoutes.get("/public/enterprise-martins", getPublicCategoriesController);
 
 categoryRoutes.use(authMiddleware, authorizeRole(["ADMIN"]));
 

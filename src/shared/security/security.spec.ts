@@ -64,7 +64,11 @@ describe("Security Measures (Helmet, CORS & Rate Limiting)", () => {
       testApp.set("trust proxy", false);
       
       // Create a fresh limiter
-      const limiter = rateLimit({ windowMs: 60 * 1000, max: 2 });
+      const limiter = rateLimit({
+        windowMs: 60 * 1000,
+        max: 2,
+        validate: { xForwardedForHeader: false }
+      });
       testApp.post("/login", limiter, (req, res) => { res.send("ok"); });
 
       // Simulate requests from different forwarded IPs

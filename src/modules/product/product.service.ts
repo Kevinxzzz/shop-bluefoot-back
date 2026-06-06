@@ -1,26 +1,22 @@
+import { z } from "zod";
 import { prisma } from "../../shared/database/prisma.js";
 import { AppError } from "../../shared/errors/AppError.js";
-import { s3 } from "../../shared/config/s3.js";
-import { env } from "../../shared/config/env.js";
-import { CopyObjectCommand, DeleteObjectsCommand } from "@aws-sdk/client-s3";
-import type { CreateProductInput } from "./product.schema.js";
+import type { CreateProductInput, UpdateProductInput } from "./product.schema.js";
 import { randomUUID } from "node:crypto";
+import { Prisma } from "../../generated/prisma/index.js";
 
-async function rollbackMovedMedia(keys: string[]) {
-  if (keys.length === 0) return;
-  try {
-    await s3.send(
-      new DeleteObjectsCommand({
-        Bucket: env.AWS_BUCKET_NAME!,
-        Delete: {
-          Objects: keys.map((Key) => ({ Key })),
-        },
-      })
-    );
-  } catch (error) {
-    console.error("Failed to rollback moved media from S3:", error);
-  }
-}
+// Módulos externos refatorados
+import { moveProductMediaFiles, deleteProductMediaFiles } from "../upload/upload.service.js";
+import { 
+  getAuthorizedProduct,
+  validateEnterpriseReadPermission,
+  validateUserReadPermission 
+} from "./product.authorization.js";
+import { 
+  validateKeepMediaIds, 
+  calculateFinalMediaState, 
+  resolveMainMedia 
+} from "./product-media.rules.js";
 
 export async function createProduct(
   userId: string,
@@ -80,45 +76,27 @@ export async function createProduct(
   }
 
   // 3. Copiar Mídias no S3 ANTES da transação
-  const mediaRecords: any[] = [];
-  const movedMediaKeys: string[] = [];
-  const originalMediaKeys: string[] = [];
+  const mediaRecords: Prisma.ProductMediaCreateManyInput[] = [];
+  let movedKeys: string[] = [];
+  let originalKeys: string[] = [];
 
   if (data.media && data.media.length > 0) {
-    try {
-      let index = 0;
-      for (const m of data.media) {
-        const fileName = m.key.split("/").pop();
-        const newKey = `enterprise/${enterpriseId}/products/${productId}/${fileName}`;
-        const newUrl = m.url.replace(m.key, newKey);
+    // moveProductMediaFiles handles rollback inside it if there's any partial failure
+    const moved = await moveProductMediaFiles(data.media as any, enterpriseId, productId);
+    
+    movedKeys = moved.map(m => m.newKey);
+    originalKeys = moved.map(m => m.originalKey);
 
-        // Copy no S3
-        await s3.send(
-          new CopyObjectCommand({
-            Bucket: env.AWS_BUCKET_NAME!,
-            CopySource: `${env.AWS_BUCKET_NAME}/${m.key}`,
-            Key: newKey,
-          })
-        );
-        movedMediaKeys.push(newKey);
-        originalMediaKeys.push(m.key);
-
-        mediaRecords.push({
-          url: newUrl,
-          key: newKey,
-          type: m.type,
-          isMain: m.isMain ?? false,
-          order: index,
-          productId,
-        });
-
-        index++;
-      }
-    } catch (error) {
-      // Se falhou durante a movimentação, tentar apagar os que já foram movidos
-      await rollbackMovedMedia(movedMediaKeys);
-      console.error("S3 error during move:", error);
-      throw new AppError("Erro ao processar mídias no provedor de armazenamento.", 500);
+    let index = 0;
+    for (const m of moved) {
+      mediaRecords.push({
+        url: m.newUrl,
+        key: m.newKey,
+        type: m.type as any,
+        isMain: m.isMain ?? false,
+        order: index++,
+        productId,
+      });
     }
   }
 
@@ -158,28 +136,332 @@ export async function createProduct(
     });
 
     // 5. Deletar os arquivos temporários APENAS após o sucesso da transação
-    if (originalMediaKeys.length > 0) {
-      try {
-        await s3.send(
-          new DeleteObjectsCommand({
-            Bucket: env.AWS_BUCKET_NAME!,
-            Delete: {
-              Objects: originalMediaKeys.map((Key) => ({ Key })),
-            },
-          })
-        );
-      } catch (deleteError) {
-        console.error("Failed to delete temp files after successful product creation:", deleteError);
-        // Não lançamos erro aqui pois o produto já foi criado com sucesso.
-        // Fica a cargo da rotina de limpeza limpar esses arquivos residuais.
-      }
+    if (originalKeys.length > 0) {
+      deleteProductMediaFiles(originalKeys).catch(() => {});
     }
 
     return product;
   } catch (error) {
     // 6. Se a transação falhar, remover as novas mídias do S3 para não deixar órfãos
-    // E os arquivos temporários originais são preservados
-    await rollbackMovedMedia(movedMediaKeys);
+    if (movedKeys.length > 0) {
+      const { rollbackProductMediaFiles } = await import("../upload/upload.service.js");
+      await rollbackProductMediaFiles(movedKeys);
+    }
     throw error;
+  }
+}
+
+export async function getEnterpriseProductsPublic(
+  query: z.infer<typeof import("./product.schema.js").getProductsQuerySchema>,
+  enterpriseId?: string
+) {
+  const skip = (query.page - 1) * query.limit;
+
+  const where: Prisma.ProductWhereInput = {
+    deletedAt: null,
+    ...(enterpriseId && { enterpriseId }),
+    ...(query.search && {
+      name: {
+        contains: query.search,
+        mode: "insensitive"
+      }
+    }),
+    ...(query.sellerId && query.sellerId.length > 0 && {
+      userId: { in: query.sellerId }
+    }),
+    ...(query.categoryId && query.categoryId.length > 0 && {
+      categories: {
+        some: {
+          categoryId: { in: query.categoryId }
+        }
+      }
+    }),
+    ...((query.minPrice !== undefined || query.maxPrice !== undefined) && {
+      price: {
+        ...(query.minPrice !== undefined && { gte: query.minPrice }),
+        ...(query.maxPrice !== undefined && { lte: query.maxPrice })
+      }
+    })
+  };
+
+  const [products, totalItems] = await Promise.all([
+    prisma.product.findMany({
+      where,
+      orderBy: { countViews: "desc" },
+      skip,
+      take: query.limit,
+      include: {
+        categories: {
+          include: {
+            category: true,
+          },
+        },
+        media: true,
+        user: { select: { id: true, name: true, profileImageUrl: true } },
+      },
+    }),
+    prisma.product.count({
+      where,
+    }),
+  ]);
+
+  return {
+    products,
+    page: query.page,
+    limit: query.limit,
+    totalItems,
+    totalPages: Math.ceil(totalItems / query.limit),
+  };
+}
+
+export async function getUserProducts(
+  enterpriseId: string,
+  userId: string,
+  query: { page: number; limit: number },
+  currentUser: { userId: string; role: string }
+) {
+  // Validate Role at service layer
+  validateUserReadPermission(userId, currentUser);
+
+  const skip = (query.page - 1) * query.limit;
+
+  const [products, totalItems] = await Promise.all([
+    prisma.product.findMany({
+      where: { enterpriseId, userId, deletedAt: null },
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: query.limit,
+      include: {
+        categories: {
+          include: {
+            category: true,
+          },
+        },
+        media: true,
+        user: { select: { id: true, name: true, profileImageUrl: true } },
+      },
+    }),
+    prisma.product.count({
+      where: { enterpriseId, userId, deletedAt: null },
+    }),
+  ]);
+
+  return {
+    products,
+    page: query.page,
+    limit: query.limit,
+    totalItems,
+    totalPages: Math.ceil(totalItems / query.limit),
+  };
+}
+
+export async function getPublicProductById(id: string) {
+  const product = await prisma.product.findFirst({
+    where: {
+      id,
+      deletedAt: null,
+    },
+    select: {
+      id: true,
+      name: true,
+      description: true,
+      price: true,
+      countViews: true,
+      categories: {
+        select: {
+          category: {
+            select: { id: true, name: true, slug: true },
+          },
+        },
+      },
+      media: {
+        select: { id: true, url: true, type: true, isMain: true, order: true },
+        orderBy: { order: "asc" as const },
+      },
+      user: {
+        select: { id: true, name: true, contactLink: true, profileImageUrl: true },
+      },
+    },
+  });
+
+  if (!product) {
+    throw new AppError("Produto não encontrado", 404);
+  }
+
+  return product;
+}
+
+export async function incrementProductView(id: string) {
+  await prisma.product.update({
+    where: { id },
+    data: { countViews: { increment: 1 } },
+  });
+}
+
+export async function updateProduct(
+  id: string,
+  user: { userId: string; role: string; enterpriseId: string },
+  data: UpdateProductInput
+) {
+  await getAuthorizedProduct(id, user, "update");
+
+  if (data.categoryIds && data.categoryIds.length > 0) {
+    const categories = await prisma.category.findMany({
+      where: {
+        id: { in: data.categoryIds },
+        enterpriseId: user.enterpriseId,
+        deletedAt: null,
+      },
+    });
+
+    if (categories.length !== data.categoryIds.length) {
+      throw new AppError("Uma ou mais categorias são inválidas.", 400);
+    }
+  }
+
+  const updatedProduct = await prisma.$transaction(async (tx) => {
+    const dataToUpdate: Prisma.ProductUpdateInput = {};
+    if (data.name !== undefined) dataToUpdate.name = data.name;
+    if (data.description !== undefined) dataToUpdate.description = data.description;
+    if (data.price !== undefined) dataToUpdate.price = data.price;
+
+    await tx.product.update({
+      where: { id },
+      data: dataToUpdate,
+    });
+
+    if (data.categoryIds) {
+      await tx.productCategory.deleteMany({
+        where: { productId: id },
+      });
+      await tx.productCategory.createMany({
+        data: data.categoryIds.map((categoryId) => ({
+          productId: id,
+          categoryId,
+        })),
+      });
+    }
+
+    return tx.product.findUnique({
+      where: { id },
+      include: { categories: true, media: true },
+    });
+  });
+
+  return updatedProduct;
+}
+
+export async function updateProductMedia(
+  id: string,
+  user: { userId: string; role: string; enterpriseId: string },
+  data: { keepMediaIds: string[] },
+  newFiles: Array<{ url: string; key: string; type: "FOTO" | "VIDEO" }>
+) {
+  const product = await getAuthorizedProduct(id, user, "update");
+
+  const currentMedias = product.media;
+  const currentMediaMap = new Map(currentMedias.map((m) => [m.id, m as any]));
+  
+  validateKeepMediaIds(data.keepMediaIds, currentMediaMap);
+
+  const { mainPhotoKept, firstKeptPhotoId } = calculateFinalMediaState(
+    data.keepMediaIds,
+    currentMediaMap,
+    newFiles as any
+  );
+
+  const mediaRecordsToInsert: Prisma.ProductMediaCreateManyInput[] = [];
+  let movedKeys: string[] = [];
+  let originalKeys: string[] = [];
+  let firstNewPhotoKey: string | null = null;
+  let orderIndex = data.keepMediaIds.length;
+  
+  if (newFiles.length > 0) {
+    const moved = await moveProductMediaFiles(newFiles as any, user.enterpriseId, id);
+    movedKeys = moved.map(m => m.newKey);
+    originalKeys = moved.map(m => m.originalKey);
+
+    for (const file of moved) {
+      if (file.type === "FOTO" && !firstNewPhotoKey) {
+        firstNewPhotoKey = file.newKey;
+      }
+      mediaRecordsToInsert.push({
+        url: file.newUrl,
+        key: file.newKey,
+        type: file.type as any,
+        isMain: false,
+        order: orderIndex++,
+        productId: id,
+      });
+    }
+  }
+
+  const newMainPhotoId = resolveMainMedia(
+    mainPhotoKept,
+    firstKeptPhotoId,
+    firstNewPhotoKey,
+    mediaRecordsToInsert
+  );
+
+  const mediaToDelete = currentMedias.filter((m) => !data.keepMediaIds.includes(m.id));
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      if (mediaToDelete.length > 0) {
+        await tx.productMedia.deleteMany({
+          where: { id: { in: mediaToDelete.map(m => m.id) } },
+        });
+      }
+
+      if (newMainPhotoId) {
+        if (currentMediaMap.has(newMainPhotoId)) {
+          await tx.productMedia.update({
+            where: { id: newMainPhotoId },
+            data: { isMain: true },
+          });
+        }
+      }
+
+      if (mediaRecordsToInsert.length > 0) {
+        await tx.productMedia.createMany({
+          data: mediaRecordsToInsert,
+        });
+      }
+    });
+
+    if (mediaToDelete.length > 0) {
+      deleteProductMediaFiles(mediaToDelete.map(m => m.key)).catch(() => {});
+    }
+
+    if (originalKeys.length > 0) {
+      deleteProductMediaFiles(originalKeys).catch(() => {});
+    }
+
+    return prisma.product.findUnique({
+      where: { id },
+      include: { media: true },
+    });
+  } catch (error) {
+    if (movedKeys.length > 0) {
+      const { rollbackProductMediaFiles } = await import("../upload/upload.service.js");
+      await rollbackProductMediaFiles(movedKeys);
+    }
+    throw error;
+  }
+}
+
+export async function deleteProduct(
+  id: string,
+  user: { userId: string; role: string; enterpriseId: string }
+) {
+  const product = await getAuthorizedProduct(id, user, "delete");
+  const mediaKeys = product.media.map((m) => m.key);
+
+  await prisma.product.delete({
+    where: { id },
+  });
+
+  if (mediaKeys.length > 0) {
+    deleteProductMediaFiles(mediaKeys).catch(() => {});
   }
 }

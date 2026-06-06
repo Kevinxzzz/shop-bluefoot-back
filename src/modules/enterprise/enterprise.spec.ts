@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "@jest/globals";
+import { describe, it, expect, beforeEach, afterEach } from "@jest/globals";
 import request from "supertest";
 import jwt from "jsonwebtoken";
 import { app } from "../../app.js";
@@ -347,4 +347,57 @@ describe("Enterprise Module", () => {
       expect(links).toHaveLength(0);
     });
   });
+
+  describe("GET /enterprise/enterprise-martins/link", () => {
+    let originalId: string;
+    let localEnterpriseId: string;
+
+    beforeEach(async () => {
+      // Registrar uma empresa para obter o ID
+      const res = await request(app)
+        .post("/enterprise/register")
+        .send(validEnterpriseData);
+      
+      localEnterpriseId = res.body.enterprise.id;
+
+      originalId = env.ID_ENTERPRISE_MARTINS;
+      env.ID_ENTERPRISE_MARTINS = localEnterpriseId;
+    });
+
+    afterEach(() => {
+      env.ID_ENTERPRISE_MARTINS = originalId;
+    });
+
+    it("should return the first link of the Martins enterprise successfully", async () => {
+      // Criar um link para essa empresa
+      await prisma.enterpriseLinkGroup.create({
+        data: {
+          enterpriseId: localEnterpriseId,
+          link: "https://chat.whatsapp.com/testlinkgroup",
+        },
+      });
+
+      const response = await request(app).get("/enterprise/enterprise-martins/link");
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty("link", "https://chat.whatsapp.com/testlinkgroup");
+    });
+
+    it("should return null if no links exist for the enterprise", async () => {
+      const response = await request(app).get("/enterprise/enterprise-martins/link");
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty("link", null);
+    });
+
+    it("should return 500 if ID_ENTERPRISE_MARTINS is not set in env", async () => {
+      (env as any).ID_ENTERPRISE_MARTINS = "";
+
+      const response = await request(app).get("/enterprise/enterprise-martins/link");
+
+      expect(response.status).toBe(500);
+      expect(response.body.error).toBe("A loja pública não está configurada corretamente (Falta ID_ENTERPRISE_MARTINS).");
+    });
+  });
 });
+

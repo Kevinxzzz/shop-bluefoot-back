@@ -34,6 +34,7 @@ export async function listUsers(enterpriseId: string) {
       id: true,
       name: true,
       email: true,
+      profileImageUrl: true,
       role: {
         select: {
           role: true,
@@ -51,6 +52,7 @@ export async function listUsers(enterpriseId: string) {
     id: user.id,
     name: user.name,
     email: user.email,
+    profileImageUrl: user.profileImageUrl,
     role: user.role.role,
     status: user.deletedAt ? "INACTIVE" : "ACTIVE",
     isFounder: user.id === founderAdmin?.id,
@@ -222,4 +224,80 @@ export async function getProfile(userId: string) {
     role: user.role.role,
   };
 }
+
+export async function getEnterpriseUsersPublic(enterpriseId: string) {
+  const users = await prisma.user.findMany({
+    where: {
+      enterpriseId,
+      deletedAt: null, // Apenas usuários ativos
+    },
+    select: {
+      id: true,
+      name: true,
+      profileImageUrl: true,
+      _count: {
+        select: {
+          products: {
+            where: {
+              deletedAt: null, // Apenas conta produtos não deletados
+            },
+          },
+        },
+      },
+    },
+    orderBy: {
+      name: "asc",
+    },
+  });
+
+  return users.map((user) => ({
+    id: user.id,
+    name: user.name,
+    imageUrl: user.profileImageUrl, // Mapeado conforme solicitado
+    productsCount: user._count.products, // Mapeado conforme solicitado
+  }));
+}
+
+export async function getPublicUserById(userId: string, enterpriseId: string) {
+  const user = await prisma.user.findFirst({
+    where: {
+      id: userId,
+      enterpriseId,
+      deletedAt: null,
+    },
+    select: {
+      id: true,
+      name: true,
+      profileImageUrl: true,
+      contactLink: true,
+      products: {
+        where: { deletedAt: null },
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          name: true,
+          price: true,
+          countViews: true,
+          createdAt: true,
+          media: {
+            orderBy: { order: "asc" },
+            select: { id: true, url: true, type: true, order: true },
+          },
+          categories: {
+            select: {
+              category: { select: { id: true, name: true, slug: true } },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!user) {
+    throw new AppError("Vendedor não encontrado", 404);
+  }
+
+  return user;
+}
+
 

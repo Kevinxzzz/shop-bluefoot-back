@@ -16,3 +16,34 @@ export const createProductSchema = z.object({
 });
 
 export type CreateProductInput = z.infer<typeof createProductSchema>;
+
+export const getProductsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(20).default(20),
+  search: z.string().optional(),
+  categoryId: z.union([z.string().uuid("ID de categoria inválido"), z.array(z.string().uuid("ID de categoria inválido"))]).transform(v => Array.isArray(v) ? v : [v]).optional(),
+  sellerId: z.union([z.string().uuid("ID de vendedor inválido"), z.array(z.string().uuid("ID de vendedor inválido"))]).transform(v => Array.isArray(v) ? v : [v]).optional(),
+  minPrice: z.coerce.number().min(0).optional(),
+  maxPrice: z.coerce.number().min(0).optional(),
+});
+
+export const updateProductSchema = z.object({
+  name: z.string().min(1, "O nome é obrigatório").optional(),
+  description: z.string().optional(),
+  price: z.number().int().positive("O preço deve ser positivo").optional(),
+  categoryIds: z.array(z.string().uuid()).optional(),
+});
+
+export type UpdateProductInput = z.infer<typeof updateProductSchema>;
+
+export const updateProductMediaSchema = z.object({
+  keepMediaIds: z
+    .array(z.string().uuid())
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: "keepMediaIds não pode conter IDs duplicados.",
+    })
+    .optional()
+    .default([]),
+});
+
+export type UpdateProductMediaInput = z.infer<typeof updateProductMediaSchema>;
