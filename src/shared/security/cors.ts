@@ -2,7 +2,7 @@ import cors from "cors";
 import { env } from "../config/env.js";
 
 export const corsConfig = cors({
-  origin: [env.FRONTEND_URL],
+  origin: [env.FRONTEND_URL, env.FRONTEND_URL_LOCAL],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: false

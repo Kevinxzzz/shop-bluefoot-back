@@ -21,6 +21,7 @@ const envSchema = z.object({
     .string()
     .min(10, "JWT_SECRET deve ter pelo menos 10 caracteres"),
   FRONTEND_URL: z.string().url(),
+  FRONTEND_URL_LOCAL: z.string().url(),
   TRUST_PROXY: z.enum(["true", "false"]).transform((val) => val === "true"),
   AWS_ACCESS_KEY: z.string(),
   AWS_SECRECT_ACCESS_KEY: z.string(),
@@ -33,14 +34,9 @@ const envSchema = z.object({
 const preprocessedEnv = {
   ...process.env,
   AWS_ACCESS_KEY:
-    process.env.AWS_ACESS_KEY ||
-    process.env.AWS_ACCESS_KEY_ID ||
     process.env.AWS_ACCESS_KEY,
   AWS_SECRECT_ACCESS_KEY:
     process.env.AWS_SECRECT_ACCESS_KEY ||
-    process.env.AWS_SECRECT_ACESS_KEY ||
-    process.env.AWS_SECRET_ACCESS_KEY ||
-    process.env.AWS_SECRET_KEY ||
     process.env["AWS_SECRECT_ACESS-KEY"],
 };
 
@@ -52,6 +48,7 @@ export const env = {
   DATABASE_URL: parsedEnv.DATABASE_URL,
   JWT_SECRET: parsedEnv.JWT_SECRET,
   FRONTEND_URL: parsedEnv.FRONTEND_URL,
+  FRONTEND_URL_LOCAL:parsedEnv.FRONTEND_URL_LOCAL,
   TRUST_PROXY: parsedEnv.TRUST_PROXY,
   AWS_ACCESS_KEY: parsedEnv.AWS_ACCESS_KEY,
   AWS_SECRET_ACCESS_KEY: parsedEnv.AWS_SECRECT_ACCESS_KEY,
