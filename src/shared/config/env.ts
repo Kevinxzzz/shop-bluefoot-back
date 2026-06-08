@@ -34,9 +34,14 @@ const envSchema = z.object({
 const preprocessedEnv = {
   ...process.env,
   AWS_ACCESS_KEY:
+    process.env.AWS_ACESS_KEY ||
+    process.env.AWS_ACCESS_KEY_ID ||
     process.env.AWS_ACCESS_KEY,
   AWS_SECRECT_ACCESS_KEY:
     process.env.AWS_SECRECT_ACCESS_KEY ||
+    process.env.AWS_SECRECT_ACESS_KEY ||
+    process.env.AWS_SECRET_ACCESS_KEY ||
+    process.env.AWS_SECRET_KEY ||
     process.env["AWS_SECRECT_ACESS-KEY"],
 };
 
