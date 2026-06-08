@@ -8,9 +8,7 @@ import { env } from "../../shared/config/env.js";
 
 import { createEnterpriseSchema } from "./enterprise.schema.js";
 
-type CreateEnterpriseInput = z.infer<
-  typeof createEnterpriseSchema
->;
+type CreateEnterpriseInput = z.infer<typeof createEnterpriseSchema>;
 
 export async function createEnterprise({
   document,
@@ -22,102 +20,91 @@ export async function createEnterprise({
   userPassword,
 }: CreateEnterpriseInput) {
   // Verifica empresa existente
-  const existingEnterprise =
-    await prisma.enterprise.findUnique({
-      where: {
-        cnpj: document,
-      },
-    });
+
+  const existingEnterprise = await prisma.enterprise.findUnique({
+    where: {
+      cnpj: document,
+    },
+  });
 
   if (existingEnterprise) {
-    throw new AppError(
-      "Empresa já cadastrada com este CNPJ",
-      400
-    );
+    throw new AppError("Empresa já cadastrada com este CNPJ", 400);
   }
 
   // Verifica email existente
-  const existingUser =
-    await prisma.user.findUnique({
-      where: {
-        email: userEmail,
-      },
-    });
+  const existingUser = await prisma.user.findUnique({
+    where: {
+      email: userEmail,
+    },
+  });
 
   if (existingUser) {
-    throw new AppError(
-      "E-mail já está em uso",
-      400
-    );
+    throw new AppError("E-mail já está em uso", 400);
   }
 
   // Verifica contactLink duplicado
   if (contactLink) {
-    const existingContactLink =
-      await prisma.user.findUnique({
-        where: {
-          contactLink,
-        },
-      });
+    const existingContactLink = await prisma.user.findUnique({
+      where: {
+        contactLink,
+      },
+    });
 
     if (existingContactLink) {
-      throw new AppError(
-        "Link de contato já está em uso",
-        400
-      );
+      throw new AppError("Link de contato já está em uso", 400);
     }
   }
 
   // Busca role ADMIN criada pelo seed
-  const adminRole =
-    await prisma.userRole.findFirst({
-      where: {
-        role: "ADMIN",
+  const adminRole = await prisma.userRole.findFirst({
+    where: {
+      role: "ADMIN",
+    },
+  });
+
+  if (!adminRole) {
+    throw new AppError("Role ADMIN não encontrada. Execute as seeds.", 500);
+  }
+
+  const hashedPassword = await bcrypt.hash(userPassword, 10);
+
+  // Transaction
+  const result = await prisma.$transaction(async (tx) => {
+    const countEnterprise = await tx.enterprise.count();
+    if (countEnterprise >= 2) {
+      throw new AppError(
+        "O limite de empresa cadastradas ja foi atingido.",
+        400,
+      );
+    }
+
+    const enterprise = await tx.enterprise.create({
+      data: {
+        cnpj: document,
+        name,
+        phoneNumber,
       },
     });
 
-  if (!adminRole) {
-    throw new AppError(
-      "Role ADMIN não encontrada. Execute as seeds.",
-      500
-    );
-  }
+    const user = await tx.user.create({
+      data: {
+        name: userName,
+        email: userEmail,
+        password: hashedPassword,
 
-  const hashedPassword =
-    await bcrypt.hash(userPassword, 10);
+        contactLink: contactLink || null,
 
-  // Transaction
-  const result = await prisma.$transaction(
-    async (tx) => {
-      const enterprise =
-        await tx.enterprise.create({
-          data: {
-            cnpj: document,
-            name,
-            phoneNumber,
-          },
-        });
+        roleId: adminRole.id,
 
-      const user = await tx.user.create({
-        data: {
-          name: userName,
-          email: userEmail,
-          password: hashedPassword,
+        enterpriseId: enterprise.id,
+      },
+    });
 
-          contactLink: contactLink || null,
-
-          roleId: adminRole.id,
-
-          enterpriseId: enterprise.id,
-        },
-      });
-
-      return {
-        enterprise,
-        user,
-      };
-    }
-  );
+    return {
+      enterprise,
+      user,
+    };
+  });
 
   const tokenPayload = {
     userId: result.user.id,
@@ -125,14 +112,10 @@ export async function createEnterprise({
     enterpriseId: result.enterprise.id,
   };
 
-  const token = jwt.sign(
-    tokenPayload,
-    env.JWT_SECRET,
-    {
-      expiresIn: "1d",
-      algorithm: "HS256",
-    }
-  );
+  const token = jwt.sign(tokenPayload, env.JWT_SECRET, {
+    expiresIn: "1d",
+    algorithm: "HS256",
+  });
 
   return {
     token,
@@ -181,9 +164,17 @@ export async function getEnterprise(enterpriseId: string) {
   };
 }
 
-type UpdateEnterpriseInput = z.infer<typeof import("./enterprise.schema.js").updateEnterpriseSchema>;
+type UpdateEnterpriseInput = z.infer<
+  typeof import("./enterprise.schema.js").updateEnterpriseSchema
+>;
 
-export async function updateEnterprise({ enterpriseId, data }: { enterpriseId: string, data: UpdateEnterpriseInput }) {
+export async function updateEnterprise({
+  enterpriseId,
+  data,
+}: {
+  enterpriseId: string;
+  data: UpdateEnterpriseInput;
+}) {
   const result = await prisma.$transaction(async (tx) => {
     const enterprise = await tx.enterprise.findUnique({
       where: { id: enterpriseId },
@@ -210,7 +201,9 @@ export async function updateEnterprise({ enterpriseId, data }: { enterpriseId: s
 
       if (data.salesGroupLink === null) {
         if (existingLink) {
-          await tx.enterpriseLinkGroup.delete({ where: { id: existingLink.id } });
+          await tx.enterpriseLinkGroup.delete({
+            where: { id: existingLink.id },
+          });
         }
       } else {
         if (existingLink) {
@@ -254,4 +247,4 @@ export async function getEnterpriseFirstLink(enterpriseId: string) {
   });
 
   return { link: linkGroup?.link ?? null };
-}
+}
