@@ -71,7 +71,7 @@ export async function createEnterprise({
   // Transaction
   const result = await prisma.$transaction(async (tx) => {
     const countEnterprise = await tx.enterprise.count();
-    if (countEnterprise >= 2) {
+    if (countEnterprise >= 3) {
       throw new AppError(
         "O limite de empresa cadastradas ja foi atingido.",
         400,
