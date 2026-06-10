@@ -66,7 +66,7 @@ model EnterpriseInviteToken {
   createdAt        DateTime    @default(now()) @map("created_at")
   expiredAt        DateTime    @map("expired_at")
   canceledAt       DateTime?   @map("canceled_at")
-  createdByAdmin   User        @relation("AdminTokens", fields: [createdByAdminId], references: [id])
+  createdByAdmin   User        @relation("AdminTokens", fields: [createdByAdminId], references: [id], onDelete: Cascade)
   enterprise       Enterprise  @relation(fields: [enterpriseId], references: [id], onDelete: Cascade)
   usedBy           UserToken[]
 
