@@ -1,11 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach } from "@jest/globals";
+import { describe, it, expect, beforeEach, afterEach, jest } from "@jest/globals";
 import request from "supertest";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import { app } from "../../app.js";
 import { prisma } from "../../shared/database/prisma.js";
 import { env } from "../../shared/config/env.js";
-
+import { s3 } from "../../shared/config/s3.js";
+import { DeleteObjectCommand, DeleteObjectsCommand } from "@aws-sdk/client-s3";
 describe("User Module", () => {
   let enterpriseId: string;
   let adminToken: string;
@@ -586,5 +587,197 @@ describe("User Module", () => {
       expect(response.body.error).toContain("Erro de validação");
     });
   });
-});
 
+  describe("DELETE /users/:id - Hard Delete User", () => {
+    let s3SendSpy: any;
+
+    beforeEach(() => {
+      s3SendSpy = jest.spyOn(s3, "send").mockResolvedValue({} as never);
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it("should hard delete a user successfully (no profile image, no products)", async () => {
+      // Cria um usuário novo para ser deletado
+      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
+      const userToDelete = await prisma.user.create({
+        data: {
+          name: "User to Delete",
+          email: "todelete@test.com",
+          password: "pwd",
+          roleId: sellerRole!.id,
+          enterpriseId,
+        },
+      });
+
+      const response = await request(app)
+        .delete(`/users/${userToDelete.id}`)
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      expect(response.status).toBe(204);
+
+      // Verify user is removed from database
+      const deletedUser = await prisma.user.findUnique({ where: { id: userToDelete.id } });
+      expect(deletedUser).toBeNull();
+
+      expect(s3SendSpy).not.toHaveBeenCalled();
+    });
+
+    it("should hard delete a user and their media files", async () => {
+      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
+      const userToDelete = await prisma.user.create({
+        data: {
+          name: "User with Media",
+          email: "media@test.com",
+          password: "pwd",
+          roleId: sellerRole!.id,
+          enterpriseId,
+          profileImageKey: "profile.jpg",
+        },
+      });
+
+      const product = await prisma.product.create({
+        data: {
+          name: "Produto",
+          price: 10,
+          userId: userToDelete.id,
+          enterpriseId,
+          media: {
+            create: {
+              url: "url",
+              key: "product.jpg",
+              type: "FOTO",
+            }
+          }
+        }
+      });
+
+      const response = await request(app)
+        .delete(`/users/${userToDelete.id}`)
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      expect(response.status).toBe(204);
+
+      // Verify S3 deletion of profile image and product media
+      expect(s3SendSpy).toHaveBeenCalledTimes(2);
+      
+      const calls = s3SendSpy.mock.calls;
+      const commands = calls.map((call: any) => call[0]);
+      
+      const deleteObjectCmd = commands.find((cmd: any) => cmd.constructor.name === "DeleteObjectCommand");
+      expect(deleteObjectCmd).toBeDefined();
+      expect(deleteObjectCmd.input.Key).toBe("profile.jpg");
+
+      const deleteObjectsCmd = commands.find((cmd: any) => cmd.constructor.name === "DeleteObjectsCommand");
+      expect(deleteObjectsCmd).toBeDefined();
+      expect(deleteObjectsCmd.input.Delete.Objects[0].Key).toBe("product.jpg");
+
+      const deletedUser = await prisma.user.findUnique({ where: { id: userToDelete.id } });
+      expect(deletedUser).toBeNull();
+      
+      const deletedProduct = await prisma.product.findUnique({ where: { id: product.id } });
+      expect(deletedProduct).toBeNull();
+    });
+
+    it("should forbid SELLER from deleting a user", async () => {
+      const response = await request(app)
+        .delete(`/users/${adminUser.id}`)
+        .set("Authorization", `Bearer ${sellerToken}`);
+
+      expect(response.status).toBe(403);
+    });
+
+    it("should fail if trying to delete a user from another enterprise", async () => {
+      const otherEnterprise = await prisma.enterprise.create({
+        data: { cnpj: "00000000000004", name: "Other", phoneNumber: "444444444" },
+      });
+      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
+      const otherUser = await prisma.user.create({
+        data: {
+          name: "Other User",
+          email: "other4@test.com",
+          password: "pwd",
+          roleId: sellerRole!.id,
+          enterpriseId: otherEnterprise.id,
+        },
+      });
+
+      const response = await request(app)
+        .delete(`/users/${otherUser.id}`)
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toBe("Usuário não encontrado");
+    });
+
+    it("should fail if trying to delete the founder admin", async () => {
+      // adminUser is the founder since they were the first admin created in beforeEach
+      const response = await request(app)
+        .delete(`/users/${adminUser.id}`)
+        .set("Authorization", `Bearer ${adminToken}`); // wait, we have a rule preventing self-deletion first.
+
+      // We should use another admin to try to delete the founder
+      const adminRole = await prisma.userRole.findFirst({ where: { role: "ADMIN" } });
+      const secondaryAdmin = await prisma.user.create({
+        data: {
+          name: "Sec Admin",
+          email: "sec@test.com",
+          password: "pwd",
+          roleId: adminRole!.id,
+          enterpriseId,
+        },
+      });
+      
+      const secAdminToken = jwt.sign(
+        { userId: secondaryAdmin.id, email: secondaryAdmin.email, role: "ADMIN", enterpriseId },
+        env.JWT_SECRET
+      );
+
+      const responseFounder = await request(app)
+        .delete(`/users/${adminUser.id}`)
+        .set("Authorization", `Bearer ${secAdminToken}`);
+
+      expect(responseFounder.status).toBe(403);
+      expect(responseFounder.body.error).toBe("O administrador fundador da empresa não pode ser excluído");
+    });
+
+    it("should fail if an admin tries to delete themselves", async () => {
+      const response = await request(app)
+        .delete(`/users/${adminUser.id}`)
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBe("Erro de validação");
+      expect(response.body.details[0].message).toBe("Você não pode excluir sua própria conta");
+    });
+
+    it("should abort deletion if S3 file removal fails", async () => {
+      s3SendSpy.mockRejectedValueOnce(new Error("S3 Error"));
+
+      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
+      const userToDelete = await prisma.user.create({
+        data: {
+          name: "User with Media",
+          email: "media_fail@test.com",
+          password: "pwd",
+          roleId: sellerRole!.id,
+          enterpriseId,
+          profileImageKey: "profile_fail.jpg",
+        },
+      });
+
+      const response = await request(app)
+        .delete(`/users/${userToDelete.id}`)
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      expect(response.status).toBe(500);
+      expect(response.body.error).toBe("Falha ao remover arquivos associados. A exclusão do usuário foi abortada.");
+
+      // Ensure user is still in the database
+      const userStillExists = await prisma.user.findUnique({ where: { id: userToDelete.id } });
+      expect(userStillExists).not.toBeNull();
+    });
+  });
+});
