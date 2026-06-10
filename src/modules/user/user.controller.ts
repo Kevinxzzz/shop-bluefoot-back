@@ -1,12 +1,13 @@
 import type { NextFunction, Request, Response } from "express";
-import { updateUserRoleSchema, updateProfileSchema, getPublicUserByIdSchema } from "./user.schema.js";
+import { updateUserRoleSchema, updateProfileSchema, getPublicUserByIdSchema, deleteUserSchema } from "./user.schema.js";
 import { 
   listUsers, 
   updateUserRole as updateUserRoleService, 
   updateProfile as updateProfileService,
   getProfile as getProfileService,
   getEnterpriseUsersPublic,
-  getPublicUserById
+  getPublicUserById,
+  deleteUserPermanently
 } from "./user.service.js";
 import { AppError } from "../../shared/errors/AppError.js";
 import { env } from "../../shared/config/env.js";
@@ -115,3 +116,20 @@ export const getPublicUserByIdHandler = async (req: Request, res: Response, next
   }
 };
 
+export const deleteUser = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsedData = deleteUserSchema.parse({
+      params: req.params,
+      user: req.user,
+    });
+
+    await deleteUserPermanently(
+      parsedData.params.id,
+      parsedData.user.enterpriseId
+    );
+
+    return res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+};

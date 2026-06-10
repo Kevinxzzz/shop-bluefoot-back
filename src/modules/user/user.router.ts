@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getUsers, updateUserRole, updateProfile, getProfile, getPublicUsersHandler, getPublicUserByIdHandler } from "./user.controller.js";
+import { getUsers, updateUserRole, updateProfile, getProfile, getPublicUsersHandler, getPublicUserByIdHandler, deleteUser } from "./user.controller.js";
 import { authMiddleware, authorizeRole } from "../../shared/middlewares/authMiddleware.js";
 
 const userRoutes = Router();
@@ -15,6 +15,6 @@ userRoutes.patch("/profile", authMiddleware, updateProfile);
 userRoutes.use(authMiddleware, authorizeRole(["ADMIN"]));
 userRoutes.get("/", getUsers);
 userRoutes.patch("/:id/role", updateUserRole);
-
+userRoutes.delete("/:id", deleteUser);
 export { userRoutes };
 

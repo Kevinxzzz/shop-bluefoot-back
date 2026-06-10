@@ -110,7 +110,7 @@ model Product {
   soldAt       DateTime?         @map("sold_at")
   deletedAt    DateTime?         @map("deletado_at")
   enterprise   Enterprise        @relation(fields: [enterpriseId], references: [id])
-  user         User              @relation(fields: [userId], references: [id])
+  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   categories   ProductCategory[]
   media        ProductMedia[]
 

@@ -1,7 +1,10 @@
 import { prisma } from "../../shared/database/prisma.js";
 import { AppError } from "../../shared/errors/AppError.js";
 import { z } from "zod";
-
+import { DeleteObjectCommand } from "@aws-sdk/client-s3";
+import { s3 } from "../../shared/config/s3.js";
+import { env } from "../../shared/config/env.js";
+import { deleteProductMediaFiles } from "../upload/upload.service.js";
 async function getFounderAdmin(enterpriseId: string) {
   // O verdadeiro fundador é o único usuário que entrou na empresa
   // sem usar um token de convite (pois ele criou a empresa)
@@ -300,4 +303,54 @@ export async function getPublicUserById(userId: string, enterpriseId: string) {
   return user;
 }
 
+export async function deleteUserPermanently(
+  userId: string,
+  enterpriseId: string
+) {
+  const userTarget = await prisma.user.findUnique({
+    where: { id: userId },
+    include: {
+      products: {
+        include: {
+          media: true,
+        },
+      },
+    },
+  });
+
+  if (!userTarget || userTarget.enterpriseId !== enterpriseId) {
+    throw new AppError("Usuário não encontrado", 404);
+  }
+
+  const founderAdmin = await getFounderAdmin(enterpriseId);
+  if (founderAdmin?.id === userId) {
+    throw new AppError("O administrador fundador da empresa não pode ser excluído", 403);
+  }
+
+
+  const productMediaKeys = userTarget.products.flatMap(p => p.media.map(m => m.key));
+
+  try {
+    if (userTarget.profileImageKey) {
+      const command = new DeleteObjectCommand({
+        Bucket: env.AWS_BUCKET_NAME!,
+        Key: userTarget.profileImageKey,
+      });
+      await s3.send(command);
+    }
+
+    if (productMediaKeys.length > 0) {
+      await deleteProductMediaFiles(productMediaKeys);
+    }
+  } catch (error) {
+    console.error("Erro ao excluir arquivos do bucket S3 durante a exclusão de usuário:", error);
+    throw new AppError("Falha ao remover arquivos associados. A exclusão do usuário foi abortada.", 500);
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.user.delete({
+      where: { id: userId },
+    });
+  });
+}
 
