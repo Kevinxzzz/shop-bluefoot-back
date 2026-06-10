@@ -23,3 +23,18 @@ export const getPublicUserByIdSchema = z.object({
   }),
 });
 
+export const deleteUserSchema = z.object({
+  params: z.object({
+    id: z.string().uuid("ID inválido"),
+  }),
+  user: z.object({
+    userId: z.string(),
+    enterpriseId: z.string()
+  }, {
+    message: "Usuário não autenticado corretamente"
+  })
+}).refine(data => data.params.id !== data.user.userId, {
+  message: "Você não pode excluir sua própria conta",
+  path: ["params", "id"]
+});
+
