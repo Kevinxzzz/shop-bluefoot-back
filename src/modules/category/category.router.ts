@@ -14,10 +14,10 @@ const categoryRoutes = Router();
 
 categoryRoutes.get("/public/enterprise-martins", getPublicCategoriesController);
 
+categoryRoutes.get("/", authMiddleware, authorizeRole(["ADMIN", "SELLER"]), getCategoriesController);
 categoryRoutes.use(authMiddleware, authorizeRole(["ADMIN"]));
 
 categoryRoutes.post("/", createCategoryController);
-categoryRoutes.get("/", getCategoriesController);
 categoryRoutes.patch("/:id", updateCategoryController);
 categoryRoutes.patch("/:id/archive", archiveCategoryController);
 categoryRoutes.patch("/:id/restore", restoreCategoryController);
