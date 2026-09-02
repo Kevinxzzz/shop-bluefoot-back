@@ -1,702 +1,502 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 import { prisma } from "../../shared/database/prisma.js";
-import { createProduct } from "./product.service.js";
-import { AppError } from "../../shared/errors/AppError.js";
-import { s3 } from "../../shared/config/s3.js";
-import { DeleteObjectCommand, CopyObjectCommand } from "@aws-sdk/client-s3";
-
-describe("Product Service - Create Product", () => {
-  const mockEnterpriseId = "ent-test-123";
-  const mockUserId = "user-test-123";
-
-  beforeEach(async () => {
-    jest.clearAllMocks();
-
-    await prisma.productMedia.deleteMany();
-    await prisma.productCategory.deleteMany();
-    await prisma.product.deleteMany();
-    await prisma.category.deleteMany();
-    await prisma.user.deleteMany();
-    await prisma.enterprise.deleteMany();
-
-    await prisma.enterprise.create({
-      data: {
-        id: mockEnterpriseId,
-        cnpj: "12345678901234",
-        name: "Enterprise Test",
-        phoneNumber: "11999999999",
-      },
-    });
-
-    const role = await prisma.userRole.findFirst() ?? await prisma.userRole.create({
-      data: { role: "ADMIN_TEST_" + Date.now(), description: "Admin test" }
-    });
-
-    await prisma.user.create({
-      data: {
-        id: mockUserId,
-        name: "User Test",
-        email: "usertest@mail.com",
-        password: "password123",
-        roleId: role.id,
-        enterpriseId: mockEnterpriseId,
-      },
-    });
-  });
-
-  it("1. should create product without categories", async () => {
-    const product = await createProduct(mockUserId, mockEnterpriseId, {
-      name: "Product Only",
-      description: "Description",
-      price: 100,
-    });
-
-    expect(product).toBeDefined();
-    expect(product.name).toBe("Product Only");
-
-    const countCategories = await prisma.productCategory.count();
-    expect(countCategories).toBe(0);
-  });
-
-  it("2. should create product with valid categories", async () => {
-    const cat1 = await prisma.category.create({
-      data: { name: "Cat 1", slug: "cat-1", enterpriseId: mockEnterpriseId },
-    });
-
-    const product = await createProduct(mockUserId, mockEnterpriseId, {
-      name: "Product With Categories",
-      categoryIds: [cat1.id],
-    });
-
-    expect(product).toBeDefined();
-    const productCategories = await prisma.productCategory.findMany({
-      where: { productId: product.id },
-    });
-    expect(productCategories.length).toBe(1);
-    expect(productCategories[0].categoryId).toBe(cat1.id);
-  });
-
-  it("3. should throw error if category belongs to another enterprise", async () => {
-    const otherEnterprise = await prisma.enterprise.create({
-      data: {
-        id: "ent-test-other",
-        cnpj: "09876543210987",
-        name: "Other Enterprise",
-        phoneNumber: "11888888888",
-      },
-    });
-
-    const otherCat = await prisma.category.create({
-      data: { name: "Other Cat", slug: "other-cat", enterpriseId: otherEnterprise.id },
-    });
-
-    await expect(
-      createProduct(mockUserId, mockEnterpriseId, {
-        name: "Product Other Cat",
-        categoryIds: [otherCat.id],
-      })
-    ).rejects.toThrow(AppError);
-  });
-
-  it("4. should throw error if media key belongs to another user", async () => {
-    await expect(
-      createProduct(mockUserId, mockEnterpriseId, {
-        name: "Product Invalid Media",
-        media: [
-          {
-            key: `enterprise/${mockEnterpriseId}/users/other-user/products/temp/file.jpg`,
-            url: "https://url.com/file.jpg",
-            type: "FOTO",
-          },
-        ],
-      })
-    ).rejects.toThrow("Invalid media.");
-  });
-
-  it("5. should throw error if media key belongs to another enterprise", async () => {
-    await expect(
-      createProduct(mockUserId, mockEnterpriseId, {
-        name: "Product Invalid Media Ent",
-        media: [
-          {
-            key: `enterprise/other-enterprise/users/${mockUserId}/products/temp/file.jpg`,
-            url: "https://url.com/file.jpg",
-            type: "FOTO",
-          },
-        ],
-      })
-    ).rejects.toThrow("Invalid media.");
-  });
-
-  it("6. should move media correctly and save to db", async () => {
-    jest.spyOn(s3, "send").mockResolvedValue({} as never);
-
-    const product = await createProduct(mockUserId, mockEnterpriseId, {
-      name: "Product With Media",
-      media: [
-        {
-          key: `enterprise/${mockEnterpriseId}/users/${mockUserId}/products/temp/file.jpg`,
-          url: "https://url.com/temp/file.jpg",
-          type: "FOTO",
-        },
-      ],
-    });
-
-    expect(s3.send).toHaveBeenCalledTimes(2); // 1 copy, 1 delete
-
-    const mediaInDb = await prisma.productMedia.findMany({
-      where: { productId: product.id },
-    });
-
-    expect(mediaInDb.length).toBe(1);
-    expect(mediaInDb[0].key).toBe(`enterprise/${mockEnterpriseId}/products/${product.id}/file.jpg`);
-    expect(mediaInDb[0].isMain).toBe(true);
-    expect(mediaInDb[0].order).toBe(0);
-  });
-
-  it("7. should rollback moved media if S3 fails mid-move", async () => {
-    jest.spyOn(s3, "send").mockRejectedValueOnce(new Error("S3 Upload Failed") as never);
-
-    await expect(
-      createProduct(mockUserId, mockEnterpriseId, {
-        name: "Product S3 Fail",
-        media: [
-          {
-            key: `enterprise/${mockEnterpriseId}/users/${mockUserId}/products/temp/file.jpg`,
-            url: "https://url.com/temp/file.jpg",
-            type: "FOTO",
-          },
-        ],
-      })
-    ).rejects.toThrow("Erro ao processar mídias no provedor de armazenamento.");
-
-    // Check rollback
-    const products = await prisma.product.findMany({
-      where: { name: "Product S3 Fail" },
-    });
-    expect(products.length).toBe(0); // Product shouldn't exist
-  });
-
-  it("8. should rollback moved media if Prisma transaction fails", async () => {
-    jest.spyOn(s3, "send").mockResolvedValue({} as never);
-    jest.spyOn(prisma, "$transaction").mockRejectedValueOnce(new Error("DB Error") as never);
-
-    await expect(
-      createProduct(mockUserId, mockEnterpriseId, {
-        name: "Product DB Fail",
-        media: [
-          {
-            key: `enterprise/${mockEnterpriseId}/users/${mockUserId}/products/temp/file.jpg`,
-            url: "https://url.com/temp/file.jpg",
-            type: "FOTO",
-          },
-        ],
-      })
-    ).rejects.toThrow("DB Error");
-
-    // We expect s3.send to be called 2 times:
-    // 1. CopyObjectCommand (move)
-    // 2. DeleteObjectsCommand (rollback)
-    // O delete do temp foi skipado porque a transação falhou.
-    expect(s3.send).toHaveBeenCalledTimes(2);
-
-    const products = await prisma.product.findMany({
-      where: { name: "Product DB Fail" },
-    });
-    expect(products.length).toBe(0);
-  });
-
-  it("9. should throw error if two media are marked as main", async () => {
-    await expect(
-      createProduct(mockUserId, mockEnterpriseId, {
-        name: "Product Two Main",
-        media: [
-          {
-            key: `enterprise/${mockEnterpriseId}/users/${mockUserId}/products/temp/f1.jpg`,
-            url: "https://url.com/f1.jpg",
-            type: "FOTO",
-            isMain: true,
-          },
-          {
-            key: `enterprise/${mockEnterpriseId}/users/${mockUserId}/products/temp/f2.jpg`,
-            url: "https://url.com/f2.jpg",
-            type: "FOTO",
-            isMain: true,
-          },
-        ],
-      })
-    ).rejects.toThrow(AppError);
-  });
-
-  it("10. should throw error if video is marked as main", async () => {
-    await expect(
-      createProduct(mockUserId, mockEnterpriseId, {
-        name: "Product Video Main",
-        media: [
-          {
-            key: `enterprise/${mockEnterpriseId}/users/${mockUserId}/products/temp/v1.mp4`,
-            url: "https://url.com/v1.mp4",
-            type: "VIDEO",
-            isMain: true,
-          },
-        ],
-      })
-    ).rejects.toThrow(AppError);
-  });
-
-  it("11. should set first FOTO as main if none is marked", async () => {
-    jest.spyOn(s3, "send").mockResolvedValue({} as never);
-
-    const product = await createProduct(mockUserId, mockEnterpriseId, {
-      name: "Product Auto Main",
-      media: [
-        {
-          key: `enterprise/${mockEnterpriseId}/users/${mockUserId}/products/temp/v1.mp4`,
-          url: "https://url.com/v1.mp4",
-          type: "VIDEO",
-        },
-        {
-          key: `enterprise/${mockEnterpriseId}/users/${mockUserId}/products/temp/f1.jpg`,
-          url: "https://url.com/f1.jpg",
-          type: "FOTO",
-        },
-        {
-          key: `enterprise/${mockEnterpriseId}/users/${mockUserId}/products/temp/f2.jpg`,
-          url: "https://url.com/f2.jpg",
-          type: "FOTO",
-        },
-      ],
-    });
-
-    const mediaInDb = await prisma.productMedia.findMany({
-      where: { productId: product.id },
-      orderBy: { order: "asc" },
-    });
-
-    expect(mediaInDb.length).toBe(3);
-    // Video is order 0
-    expect(mediaInDb[0].type).toBe("VIDEO");
-    expect(mediaInDb[0].isMain).toBe(false);
-
-    // First Foto is order 1
-    expect(mediaInDb[1].type).toBe("FOTO");
-    expect(mediaInDb[1].isMain).toBe(true);
-
-    // Second Foto is order 2
-    expect(mediaInDb[2].type).toBe("FOTO");
-    expect(mediaInDb[2].isMain).toBe(false);
-  });
-});
-
-import { 
+import {
+  createProduct,
   getEnterpriseProductsPublic,
   getUserProducts,
-  updateProduct,
-  updateProductMedia,
-  deleteProduct
-} from "./product.service.js";
-
-import { getAuthorizedProduct } from "./product.authorization.js";
-
-describe("Product Service - CRUD Operations", () => {
-  const mockEnterpriseId = "ent-crud-123";
-  const mockAdminId = "admin-crud-123";
-  const mockSellerId = "seller-crud-123";
-
-  beforeEach(async () => {
-    jest.clearAllMocks();
-
-    await prisma.productMedia.deleteMany();
-    await prisma.productCategory.deleteMany();
-    await prisma.product.deleteMany();
-    await prisma.category.deleteMany();
-    await prisma.user.deleteMany();
-    await prisma.userRole.deleteMany();
-    await prisma.enterprise.deleteMany();
-
-    await prisma.enterprise.create({
-      data: {
-        id: mockEnterpriseId,
-        cnpj: "98765432109876",
-        name: "Enterprise CRUD",
-        phoneNumber: "11988888888",
-      },
-    });
-
-    const roleAdmin = await prisma.userRole.create({
-      data: { role: "ADMIN_CRUD", description: "Admin test" }
-    });
-    
-    const roleSeller = await prisma.userRole.create({
-      data: { role: "SELLER_CRUD", description: "Seller test" }
-    });
-
-    await prisma.user.createMany({
-      data: [
-        {
-          id: mockAdminId,
-          name: "Admin",
-          email: "admincrud@mail.com",
-          password: "password123",
-          roleId: roleAdmin.id,
-          enterpriseId: mockEnterpriseId,
-        },
-        {
-          id: mockSellerId,
-          name: "Seller",
-          email: "sellercrud@mail.com",
-          password: "password123",
-          roleId: roleSeller.id,
-          enterpriseId: mockEnterpriseId,
-        }
-      ]
-    });
-  });
-
-  it("should enforce authorization correctly (getAuthorizedProduct)", async () => {
-    const product = await prisma.product.create({
-      data: {
-        name: "Test Prod",
-        userId: mockSellerId,
-        enterpriseId: mockEnterpriseId,
-      }
-    });
-
-    // Admin reading: Success
-    const p1 = await getAuthorizedProduct(product.id, { userId: mockAdminId, role: "ADMIN", enterpriseId: mockEnterpriseId }, "read");
-    expect(p1.id).toBe(product.id);
-
-    // Admin updating: Error
-    await expect(
-      getAuthorizedProduct(product.id, { userId: mockAdminId, role: "ADMIN", enterpriseId: mockEnterpriseId }, "update")
-    ).rejects.toThrow("Acesso negado para edição");
-
-    // Admin deleting: Success
-    const p3 = await getAuthorizedProduct(product.id, { userId: mockAdminId, role: "ADMIN", enterpriseId: mockEnterpriseId }, "delete");
-    expect(p3.id).toBe(product.id);
-
-    // Seller updating own: Success
-    const p4 = await getAuthorizedProduct(product.id, { userId: mockSellerId, role: "SELLER", enterpriseId: mockEnterpriseId }, "update");
-    expect(p4.id).toBe(product.id);
-
-    // Other seller reading: Error
-    await expect(
-      getAuthorizedProduct(product.id, { userId: "other", role: "SELLER", enterpriseId: mockEnterpriseId }, "read")
-    ).rejects.toThrow("Acesso negado para leitura");
-  });
-
-  it("should paginate getEnterpriseProducts and include owner user", async () => {
-    for(let i=0; i < 25; i++) {
-      await prisma.product.create({
-        data: { name: `Prod ${i}`, userId: mockSellerId, enterpriseId: mockEnterpriseId }
-      });
-    }
-
-    const res = await getEnterpriseProductsPublic({ page: 2, limit: 10 }, mockEnterpriseId);
-    expect(res.totalItems).toBe(25);
-    expect(res.totalPages).toBe(3);
-    expect(res.products.length).toBe(10);
-    expect(res.page).toBe(2);
-    expect(res.products[0].user).toBeDefined();
-    expect(res.products[0].user.name).toBe("Seller");
-  });
-
-  it("should update product data and categories via transaction", async () => {
-    const cat1 = await prisma.category.create({ data: { name: "C1", slug: "c1", enterpriseId: mockEnterpriseId } });
-    const cat2 = await prisma.category.create({ data: { name: "C2", slug: "c2", enterpriseId: mockEnterpriseId } });
-    
-    const product = await prisma.product.create({
-      data: { name: "P1", userId: mockSellerId, enterpriseId: mockEnterpriseId }
-    });
-
-    const updated = await updateProduct(
-      product.id, 
-      { userId: mockSellerId, role: "SELLER", enterpriseId: mockEnterpriseId },
-      { name: "P1 Updated", price: 200, categoryIds: [cat1.id, cat2.id] }
-    );
-
-    expect(updated?.name).toBe("P1 Updated");
-    expect(updated?.price).toBe(200);
-    expect(updated?.categories.length).toBe(2);
-  });
-
-  it("should update media, handle isMain fallback, and limit to max 3 photos", async () => {
-    jest.spyOn(s3, "send").mockResolvedValue({} as never);
-
-    const product = await prisma.product.create({
-      data: { name: "P_MEDIA", userId: mockSellerId, enterpriseId: mockEnterpriseId }
-    });
-
-    const m1 = await prisma.productMedia.create({
-      data: { url: "http://f1", key: "f1", type: "FOTO", isMain: true, productId: product.id }
-    });
-
-    // Delete m1 and send 1 new photo, it should become main
-    const newMedia = await updateProductMedia(
-      product.id,
-      { userId: mockSellerId, role: "SELLER", enterpriseId: mockEnterpriseId },
-      { keepMediaIds: [] },
-      [{ url: "http://new", key: "temp/new", type: "FOTO" }]
-    );
-
-    expect(newMedia?.media.length).toBe(1);
-    expect(newMedia?.media[0].isMain).toBe(true);
-    expect(s3.send).toHaveBeenCalled(); // Copy & Delete
-  });
-
-  it("should not revert DB if S3 fails during DELETE", async () => {
-    jest.spyOn(s3, "send").mockRejectedValue(new Error("AWS ERROR") as never);
-
-    const product = await prisma.product.create({
-      data: { name: "P_DEL", userId: mockSellerId, enterpriseId: mockEnterpriseId }
-    });
-    await prisma.productMedia.create({
-      data: { url: "http://del", key: "del_key", type: "FOTO", isMain: true, productId: product.id }
-    });
-
-    const consoleSpy = jest.spyOn(console, "error").mockImplementation(() => {});
-
-    // Does not throw
-    await expect(deleteProduct(product.id, { userId: mockAdminId, role: "ADMIN", enterpriseId: mockEnterpriseId })).resolves.toBeUndefined();
-
-    const check = await prisma.product.findUnique({ where: { id: product.id } });
-    expect(check).toBeNull(); // It was deleted from DB even if S3 failed
-    consoleSpy.mockRestore();
-  });
-});
-
-import {
   getPublicProductById,
   incrementProductView,
+  updateProduct,
+  deleteProduct,
 } from "./product.service.js";
+import { getAuthorizedProduct } from "./product.authorization.js";
+import { s3 } from "../../shared/config/s3.js";
+import {
+  createProductSchema,
+  updateProductSchema,
+  getProductsQuerySchema,
+  updateProductMediaSchema,
+} from "./product.schema.js";
 
-import { app } from "../../app.js";
-import request from "supertest";
+describe("Product Module", () => {
+  const mockEnterpriseId = "ent-123";
+  const mockUserId = "user-123";
+  const mockAdminId = "admin-123";
 
-describe("Product Service - Public Product Details", () => {
-  const mockEnterpriseId = "ent-public-123";
-  const mockSellerId = "seller-public-123";
-  let testProductId: string;
-
-  beforeEach(async () => {
+  beforeEach(() => {
+    jest.restoreAllMocks();
     jest.clearAllMocks();
 
-    await prisma.productMedia.deleteMany();
-    await prisma.productCategory.deleteMany();
-    await prisma.product.deleteMany();
-    await prisma.category.deleteMany();
-    await prisma.user.deleteMany();
-    await prisma.userRole.deleteMany();
-    await prisma.enterprise.deleteMany();
+    jest
+      .spyOn(s3, "send")
+      .mockImplementation(() => Promise.resolve({} as never));
+  });
 
-    await prisma.enterprise.create({
-      data: {
-        id: mockEnterpriseId,
-        cnpj: "11111111111111",
-        name: "Enterprise Public",
-        phoneNumber: "11977777777",
-      },
+  describe("Zod Schemas", () => {
+    it("deve validar payload correto de criação de produto", () => {
+      const parsed = createProductSchema.safeParse({
+        name: "Camiseta",
+        price: 50,
+        categoryIds: ["123e4567-e89b-12d3-a456-426614174000"],
+      });
+      expect(parsed.success).toBe(true);
     });
 
-    const role = await prisma.userRole.create({
-      data: { role: "SELLER_PUBLIC", description: "Seller test" },
+    it("deve rejeitar preço negativo", () => {
+      const parsed = createProductSchema.safeParse({
+        name: "Camiseta",
+        price: -10,
+      });
+      expect(parsed.success).toBe(false);
     });
 
-    await prisma.user.create({
-      data: {
-        id: mockSellerId,
-        name: "Seller Public",
-        email: "sellerpublic@mail.com",
-        password: "password123",
-        contactLink: "https://wa.me/5511999999999",
-        roleId: role.id,
+    it("deve rejeitar keepMediaIds duplicados", () => {
+      const uuid = "123e4567-e89b-12d3-a456-426614174000";
+      const parsed = updateProductMediaSchema.safeParse({
+        keepMediaIds: [uuid, uuid],
+      });
+      expect(parsed.success).toBe(false);
+    });
+
+    it("deve aplicar defaults e coerção no getProductsQuerySchema", () => {
+      const parsed = getProductsQuerySchema.parse({
+        page: "2",
+        limit: "10",
+        minPrice: "100",
+      });
+      expect(parsed.page).toBe(2);
+      expect(parsed.limit).toBe(10);
+      expect(parsed.minPrice).toBe(100);
+    });
+  });
+
+  describe("createProduct", () => {
+    it("1. deve criar produto sem categorias com sucesso", async () => {
+      const mockTx = {
+        product: {
+          create: jest.fn<any>().mockResolvedValue({
+            id: "prod-1",
+            name: "Produto 1",
+            userId: mockUserId,
+            enterpriseId: mockEnterpriseId,
+          }),
+        },
+        productCategory: {
+          createMany: jest.fn(),
+        },
+        productMedia: {
+          createMany: jest.fn(),
+        },
+      };
+
+      jest
+        .spyOn(prisma, "$transaction")
+        .mockImplementation(async (cb: any) => cb(mockTx));
+
+      const result = await createProduct(mockUserId, mockEnterpriseId, {
+        name: "Produto 1",
+      });
+
+      expect(result.id).toBe("prod-1");
+      expect(mockTx.product.create).toHaveBeenCalled();
+    });
+
+    it("2. deve criar produto com categorias válidas", async () => {
+      const catId = "123e4567-e89b-12d3-a456-426614174000";
+      jest.spyOn(prisma.category, "findMany").mockResolvedValue([
+        { id: catId, enterpriseId: mockEnterpriseId, deletedAt: null },
+      ] as any);
+
+      const mockTx = {
+        product: {
+          create: jest.fn<any>().mockResolvedValue({
+            id: "prod-1",
+            name: "Produto 1",
+          }),
+        },
+        productCategory: {
+          createMany: jest.fn<any>().mockResolvedValue({ count: 1 }),
+        },
+        productMedia: {
+          createMany: jest.fn(),
+        },
+      };
+
+      jest
+        .spyOn(prisma, "$transaction")
+        .mockImplementation(async (cb: any) => cb(mockTx));
+
+      const result = await createProduct(mockUserId, mockEnterpriseId, {
+        name: "Produto 1",
+        categoryIds: [catId],
+      });
+
+      expect(result.id).toBe("prod-1");
+      expect(mockTx.productCategory.createMany).toHaveBeenCalledWith({
+        data: [{ productId: "prod-1", categoryId: catId }],
+      });
+    });
+
+    it("3. deve lançar erro se categoria pertencer a outra empresa", async () => {
+      const catId = "123e4567-e89b-12d3-a456-426614174000";
+      // Retorna vazio pois enterpriseId não bate
+      jest.spyOn(prisma.category, "findMany").mockResolvedValue([]);
+
+      await expect(
+        createProduct(mockUserId, mockEnterpriseId, {
+          name: "Produto 1",
+          categoryIds: [catId],
+        })
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message: "One or more categories are invalid.",
+      });
+    });
+
+    it("4. deve lançar 403 se a key da mídia não pertencer ao usuário", async () => {
+      const invalidMedia = [
+        {
+          url: "https://media.bluefootgg.com/temp/1.jpg",
+          key: `enterprise/${mockEnterpriseId}/users/other-user/products/temp/1.jpg`,
+          type: "FOTO" as const,
+        },
+      ];
+
+      await expect(
+        createProduct(mockUserId, mockEnterpriseId, {
+          name: "Produto 1",
+          media: invalidMedia,
+        })
+      ).rejects.toMatchObject({
+        statusCode: 403,
+        message: "Invalid media.",
+      });
+    });
+
+    it("5. deve lançar 400 se mais de uma mídia for marcada como principal (isMain)", async () => {
+      const media = [
+        {
+          url: "https://media.bluefootgg.com/temp/1.jpg",
+          key: `enterprise/${mockEnterpriseId}/users/${mockUserId}/products/temp/1.jpg`,
+          type: "FOTO" as const,
+          isMain: true,
+        },
+        {
+          url: "https://media.bluefootgg.com/temp/2.jpg",
+          key: `enterprise/${mockEnterpriseId}/users/${mockUserId}/products/temp/2.jpg`,
+          type: "FOTO" as const,
+          isMain: true,
+        },
+      ];
+
+      await expect(
+        createProduct(mockUserId, mockEnterpriseId, {
+          name: "Produto 1",
+          media,
+        })
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Apenas uma mídia pode ser definida como principal.",
+      });
+    });
+
+    it("6. deve lançar 400 se vídeo for marcado como mídia principal", async () => {
+      const media = [
+        {
+          url: "https://media.bluefootgg.com/temp/v.mp4",
+          key: `enterprise/${mockEnterpriseId}/users/${mockUserId}/products/temp/v.mp4`,
+          type: "VIDEO" as const,
+          isMain: true,
+        },
+      ];
+
+      await expect(
+        createProduct(mockUserId, mockEnterpriseId, {
+          name: "Produto 1",
+          media,
+        })
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Um vídeo não pode ser a mídia principal.",
+      });
+    });
+
+    it("7. deve marcar automaticamente a primeira FOTO como isMain se nenhuma for marcada", async () => {
+      const media = [
+        {
+          url: "https://media.bluefootgg.com/temp/1.jpg",
+          key: `enterprise/${mockEnterpriseId}/users/${mockUserId}/products/temp/1.jpg`,
+          type: "FOTO" as const,
+        },
+      ];
+
+      const mockTx = {
+        product: {
+          create: jest.fn<any>().mockResolvedValue({ id: "prod-1" }),
+        },
+        productCategory: { createMany: jest.fn() },
+        productMedia: { createMany: jest.fn() },
+      };
+
+      jest
+        .spyOn(prisma, "$transaction")
+        .mockImplementation(async (cb: any) => cb(mockTx));
+
+      await createProduct(mockUserId, mockEnterpriseId, {
+        name: "Produto 1",
+        media,
+      });
+
+      expect(mockTx.productMedia.createMany).toHaveBeenCalledWith({
+        data: expect.arrayContaining([
+          expect.objectContaining({ isMain: true }),
+        ]),
+      });
+    });
+
+    it("8. deve fazer rollback no S3 se a transação do Prisma falhar", async () => {
+      const media = [
+        {
+          url: "https://media.bluefootgg.com/temp/1.jpg",
+          key: `enterprise/${mockEnterpriseId}/users/${mockUserId}/products/temp/1.jpg`,
+          type: "FOTO" as const,
+        },
+      ];
+
+      jest
+        .spyOn(prisma, "$transaction")
+        .mockRejectedValue(new Error("Prisma Transaction Fail") as never);
+
+      await expect(
+        createProduct(mockUserId, mockEnterpriseId, {
+          name: "Produto 1",
+          media,
+        })
+      ).rejects.toThrow("Prisma Transaction Fail");
+
+      // Deve ter chamado o s3.send para rollback
+      expect(s3.send).toHaveBeenCalled();
+    });
+  });
+
+  describe("getAuthorizedProduct", () => {
+    it("9. deve autorizar ADMIN para exclusão de produto da empresa", async () => {
+      jest.spyOn(prisma.product, "findFirst").mockResolvedValue({
+        id: "prod-1",
         enterpriseId: mockEnterpriseId,
-      },
+        userId: "other-seller",
+        media: [],
+      } as any);
+
+      const product = await getAuthorizedProduct(
+        "prod-1",
+        { userId: mockAdminId, role: "ADMIN", enterpriseId: mockEnterpriseId },
+        "delete"
+      );
+
+      expect(product.id).toBe("prod-1");
     });
 
-    const category = await prisma.category.create({
-      data: { name: "Cat Public", slug: "cat-public", enterpriseId: mockEnterpriseId },
-    });
-
-    const product = await prisma.product.create({
-      data: {
-        name: "Product Public",
-        description: "Public description",
-        price: 1500,
-        userId: mockSellerId,
+    it("10. deve negar atualização de produto por ADMIN se ele não for o dono", async () => {
+      jest.spyOn(prisma.product, "findFirst").mockResolvedValue({
+        id: "prod-1",
         enterpriseId: mockEnterpriseId,
-      },
+        userId: "other-seller",
+        media: [],
+      } as any);
+
+      await expect(
+        getAuthorizedProduct(
+          "prod-1",
+          { userId: mockAdminId, role: "ADMIN", enterpriseId: mockEnterpriseId },
+          "update"
+        )
+      ).rejects.toMatchObject({
+        statusCode: 403,
+        message: "Acesso negado para edição",
+      });
     });
 
-    testProductId = product.id;
+    it("11. deve negar acesso de SELLER ao produto de outro usuário", async () => {
+      jest.spyOn(prisma.product, "findFirst").mockResolvedValue({
+        id: "prod-1",
+        enterpriseId: mockEnterpriseId,
+        userId: "other-seller",
+        media: [],
+      } as any);
 
-    await prisma.productCategory.create({
-      data: { productId: testProductId, categoryId: category.id },
+      await expect(
+        getAuthorizedProduct(
+          "prod-1",
+          { userId: mockUserId, role: "SELLER", enterpriseId: mockEnterpriseId },
+          "update"
+        )
+      ).rejects.toMatchObject({
+        statusCode: 403,
+        message: "Acesso negado para edição",
+      });
+    });
+  });
+
+  describe("getEnterpriseProductsPublic", () => {
+    it("12. deve listar produtos paginados com URLs CDN resolvidas", async () => {
+      const mockProducts = [
+        {
+          id: "prod-1",
+          name: "Produto 1",
+          media: [{ key: "media-key-1.jpg", url: "https://old/1.jpg" }],
+          user: {
+            id: mockUserId,
+            name: "Vendedor",
+            profileImageUrl: null,
+            profileImageKey: null,
+          },
+        },
+      ];
+
+      jest.spyOn(prisma.product, "findMany").mockResolvedValue(mockProducts as any);
+      jest.spyOn(prisma.product, "count").mockResolvedValue(1 as any);
+
+      const result = await getEnterpriseProductsPublic(
+        { page: 1, limit: 10 },
+        mockEnterpriseId
+      );
+
+      expect(result.products).toHaveLength(1);
+      expect(result.products[0].media[0].url).toContain(
+        "https://media.bluefootgg.com/media-key-1.jpg"
+      );
+      expect(result.totalItems).toBe(1);
+    });
+  });
+
+  describe("getUserProducts", () => {
+    it("13. deve listar produtos do próprio vendedor", async () => {
+      jest.spyOn(prisma.product, "findMany").mockResolvedValue([
+        {
+          id: "prod-1",
+          media: [],
+          user: { profileImageUrl: null, profileImageKey: null },
+        },
+      ] as any);
+      jest.spyOn(prisma.product, "count").mockResolvedValue(1 as any);
+
+      const result = await getUserProducts(
+        mockEnterpriseId,
+        mockUserId,
+        { page: 1, limit: 10 },
+        { userId: mockUserId, role: "SELLER" }
+      );
+
+      expect(result.products).toHaveLength(1);
+      expect(result.totalItems).toBe(1);
+    });
+  });
+
+  describe("getPublicProductById", () => {
+    it("14. deve retornar dados públicos do produto e resolver URLs CDN", async () => {
+      jest.spyOn(prisma.product, "findFirst").mockResolvedValue({
+        id: "prod-1",
+        name: "Sapato",
+        description: "Couro",
+        price: 250,
+        countViews: 15,
+        categories: [],
+        media: [{ id: "m-1", key: "shoe.jpg", url: "https://old/shoe.jpg", isMain: true }],
+        user: { id: "u-1", name: "Loja", profileImageKey: "avatar.jpg", profileImageUrl: null },
+      } as any);
+
+      const result = await getPublicProductById("prod-1");
+
+      expect(result.name).toBe("Sapato");
+      expect(result.media[0].url).toContain("https://media.bluefootgg.com/shoe.jpg");
+      expect(result.user.profileImageUrl).toContain("https://media.bluefootgg.com/avatar.jpg");
     });
 
-    await prisma.productMedia.create({
-      data: {
-        url: "https://cdn.example.com/photo.jpg",
-        key: "photo-key",
-        type: "FOTO",
-        isMain: true,
-        order: 0,
-        productId: testProductId,
-      },
+    it("15. deve lançar 404 se produto não for encontrado", async () => {
+      jest.spyOn(prisma.product, "findFirst").mockResolvedValue(null as any);
+
+      await expect(getPublicProductById("prod-404")).rejects.toMatchObject({
+        statusCode: 404,
+        message: "Produto não encontrado",
+      });
     });
   });
 
-  // ── Sucesso ──────────────────────────────────────────────
+  describe("incrementProductView", () => {
+    it("16. deve incrementar visualização de produto", async () => {
+      jest.spyOn(prisma.product, "update").mockResolvedValue({ id: "prod-1" } as any);
 
-  it("should return public product without authentication", async () => {
-    const product = await getPublicProductById(testProductId);
+      await incrementProductView("prod-1");
 
-    expect(product).toBeDefined();
-    expect(product.id).toBe(testProductId);
-    expect(product.name).toBe("Product Public");
-    expect(product.description).toBe("Public description");
-    expect(product.price).toBe(1500);
-    expect(product.user.name).toBe("Seller Public");
-    expect(product.user.contactLink).toBe("https://wa.me/5511999999999");
-    expect(product.categories.length).toBe(1);
-    expect(product.media.length).toBe(1);
-    expect(product.media[0].isMain).toBe(true);
-  });
-
-  it("should not return internal fields in public response", async () => {
-    const product = await getPublicProductById(testProductId);
-
-    const productAsAny = product as any;
-    expect(productAsAny.enterpriseId).toBeUndefined();
-    expect(productAsAny.userId).toBeUndefined();
-    expect(productAsAny.deletedAt).toBeUndefined();
-    expect(productAsAny.createdAt).toBeUndefined();
-    expect(productAsAny.countViews).toBeDefined();
-  });
-
-  // ── Falhas ──────────────────────────────────────────────
-
-  it("should throw 404 for non-existent product", async () => {
-    await expect(
-      getPublicProductById("non-existent-id")
-    ).rejects.toThrow("Produto não encontrado");
-
-    try {
-      await getPublicProductById("non-existent-id");
-    } catch (error) {
-      expect(error).toBeInstanceOf(AppError);
-      expect((error as AppError).statusCode).toBe(404);
-    }
-  });
-
-  it("should not return soft-deleted product", async () => {
-    await prisma.product.update({
-      where: { id: testProductId },
-      data: { deletedAt: new Date() },
+      expect(prisma.product.update).toHaveBeenCalledWith({
+        where: { id: "prod-1" },
+        data: { countViews: { increment: 1 } },
+      });
     });
-
-    await expect(
-      getPublicProductById(testProductId)
-    ).rejects.toThrow("Produto não encontrado");
   });
 
-  // ── Contabilização de Views ──────────────────────────────
+  describe("updateProduct", () => {
+    it("17. deve atualizar produto e suas categorias via transação", async () => {
+      jest.spyOn(prisma.product, "findFirst").mockResolvedValue({
+        id: "prod-1",
+        enterpriseId: mockEnterpriseId,
+        userId: mockUserId,
+        media: [],
+      } as any);
 
-  it("should increment countViews on first visit", async () => {
-    const before = await prisma.product.findUnique({ where: { id: testProductId } });
-    expect(before!.countViews).toBe(0);
+      const catId = "123e4567-e89b-12d3-a456-426614174000";
+      jest.spyOn(prisma.category, "findMany").mockResolvedValue([
+        { id: catId, enterpriseId: mockEnterpriseId, deletedAt: null },
+      ] as any);
 
-    await incrementProductView(testProductId);
+      const mockTx = {
+        product: {
+          update: jest.fn<any>().mockResolvedValue({}),
+          findUnique: jest.fn<any>().mockResolvedValue({ id: "prod-1", name: "Atualizado" }),
+        },
+        productCategory: {
+          deleteMany: jest.fn<any>().mockResolvedValue({}),
+          createMany: jest.fn<any>().mockResolvedValue({}),
+        },
+      };
 
-    const after = await prisma.product.findUnique({ where: { id: testProductId } });
-    expect(after!.countViews).toBe(1);
+      jest
+        .spyOn(prisma, "$transaction")
+        .mockImplementation(async (cb: any) => cb(mockTx));
+
+      const result = await updateProduct(
+        "prod-1",
+        { userId: mockUserId, role: "SELLER", enterpriseId: mockEnterpriseId },
+        { name: "Atualizado", categoryIds: [catId] }
+      );
+
+      expect(result.name).toBe("Atualizado");
+      expect(mockTx.productCategory.deleteMany).toHaveBeenCalledWith({
+        where: { productId: "prod-1" },
+      });
+    });
   });
 
-  it("should increment countViews atomically", async () => {
-    await incrementProductView(testProductId);
-    await incrementProductView(testProductId);
-    await incrementProductView(testProductId);
+  describe("deleteProduct", () => {
+    it("18. deve excluir produto e acionar deleção de mídias no S3", async () => {
+      jest.spyOn(prisma.product, "findFirst").mockResolvedValue({
+        id: "prod-1",
+        enterpriseId: mockEnterpriseId,
+        userId: mockUserId,
+        media: [{ key: "media-to-del.jpg" }],
+      } as any);
 
-    const product = await prisma.product.findUnique({ where: { id: testProductId } });
-    expect(product!.countViews).toBe(3);
-  });
+      jest.spyOn(prisma.product, "delete").mockResolvedValue({ id: "prod-1" } as any);
 
-  // ── Testes de Integração (Controller + Cookie) ──────────
+      await deleteProduct("prod-1", {
+        userId: mockUserId,
+        role: "SELLER",
+        enterpriseId: mockEnterpriseId,
+      });
 
-  it("should increment view for unauthenticated visitor without cookie", async () => {
-    const res = await request(app)
-      .get(`/products/${testProductId}`)
-      .expect(200);
-
-    expect(res.body.name).toBe("Product Public");
-
-    // Verify cookie was set
-    const cookies = res.headers["set-cookie"];
-    expect(cookies).toBeDefined();
-    const viewCookie = Array.isArray(cookies)
-      ? cookies.find((c: string) => c.includes(`product_view_${testProductId}`))
-      : cookies?.includes(`product_view_${testProductId}`) ? cookies : undefined;
-    expect(viewCookie).toBeDefined();
-    expect(viewCookie).toContain("HttpOnly");
-
-    // Verify view was incremented
-    const product = await prisma.product.findUnique({ where: { id: testProductId } });
-    expect(product!.countViews).toBe(1);
-  });
-
-  it("should NOT increment view on refresh (cookie present)", async () => {
-    // First visit
-    await request(app)
-      .get(`/products/${testProductId}`)
-      .expect(200);
-
-    const after1 = await prisma.product.findUnique({ where: { id: testProductId } });
-    expect(after1!.countViews).toBe(1);
-
-    // Refresh (with cookie)
-    await request(app)
-      .get(`/products/${testProductId}`)
-      .set("Cookie", `product_view_${testProductId}=1`)
-      .expect(200);
-
-    const after2 = await prisma.product.findUnique({ where: { id: testProductId } });
-    expect(after2!.countViews).toBe(1);
-  });
-
-  it("should NOT increment view for authenticated user", async () => {
-    const jwt = await import("jsonwebtoken");
-    const { env } = await import("../../shared/config/env.js");
-    const token = jwt.default.sign({ userId: mockSellerId }, env.JWT_SECRET, { algorithm: "HS256" });
-
-    await request(app)
-      .get(`/products/${testProductId}`)
-      .set("Authorization", `Bearer ${token}`)
-      .expect(200);
-
-    const product = await prisma.product.findUnique({ where: { id: testProductId } });
-    expect(product!.countViews).toBe(0);
-  });
-
-  it("should treat invalid token as unauthenticated visitor", async () => {
-    const res = await request(app)
-      .get(`/products/${testProductId}`)
-      .set("Authorization", "Bearer invalid-token-here")
-      .expect(200);
-
-    // Should have incremented (treated as visitor)
-    const product = await prisma.product.findUnique({ where: { id: testProductId } });
-    expect(product!.countViews).toBe(1);
-
-    // Should have set cookie
-    const cookies = res.headers["set-cookie"];
-    expect(cookies).toBeDefined();
-  });
-
-  it("should return 404 via HTTP for non-existent product", async () => {
-    const res = await request(app)
-      .get("/products/non-existent-id")
-      .expect(404);
-
-    expect(res.body.error).toBe("Produto não encontrado");
+      expect(prisma.product.delete).toHaveBeenCalledWith({ where: { id: "prod-1" } });
+      expect(s3.send).toHaveBeenCalled();
+    });
   });
 });

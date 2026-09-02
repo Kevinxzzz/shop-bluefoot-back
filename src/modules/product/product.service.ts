@@ -7,6 +7,7 @@ import { Prisma } from "@prisma/client";
 
 // Módulos externos refatorados
 import { moveProductMediaFiles, deleteProductMediaFiles } from "../upload/upload.service.js";
+import { resolveMediaUrl } from "../../shared/utils/resolveMediaUrl.js";
 import { 
   getAuthorizedProduct,
   validateEnterpriseReadPermission,
@@ -17,6 +18,20 @@ import {
   calculateFinalMediaState, 
   resolveMainMedia 
 } from "./product-media.rules.js";
+
+function resolveProductUrls<T extends { media: any[]; user: { profileImageUrl: string | null; profileImageKey?: string | null } }>(product: T) {
+  return {
+    ...product,
+    media: product.media.map((m: any) => ({
+      ...m,
+      url: resolveMediaUrl(m.key) ?? m.url,
+    })),
+    user: {
+      ...product.user,
+      profileImageUrl: resolveMediaUrl(product.user.profileImageKey) ?? product.user.profileImageUrl,
+    },
+  };
+}
 
 export async function createProduct(
   userId: string,
@@ -197,7 +212,7 @@ export async function getEnterpriseProductsPublic(
           },
         },
         media: true,
-        user: { select: { id: true, name: true, profileImageUrl: true } },
+        user: { select: { id: true, name: true, profileImageUrl: true, profileImageKey: true } },
       },
     }),
     prisma.product.count({
@@ -206,7 +221,7 @@ export async function getEnterpriseProductsPublic(
   ]);
 
   return {
-    products,
+    products: products.map(resolveProductUrls),
     page: query.page,
     limit: query.limit,
     totalItems,
@@ -238,7 +253,7 @@ export async function getUserProducts(
           },
         },
         media: true,
-        user: { select: { id: true, name: true, profileImageUrl: true } },
+        user: { select: { id: true, name: true, profileImageUrl: true, profileImageKey: true } },
       },
     }),
     prisma.product.count({
@@ -247,7 +262,7 @@ export async function getUserProducts(
   ]);
 
   return {
-    products,
+    products: products.map(resolveProductUrls),
     page: query.page,
     limit: query.limit,
     totalItems,
@@ -275,11 +290,11 @@ export async function getPublicProductById(id: string) {
         },
       },
       media: {
-        select: { id: true, url: true, type: true, isMain: true, order: true },
+        select: { id: true, url: true, key: true, type: true, isMain: true, order: true },
         orderBy: { order: "asc" as const },
       },
       user: {
-        select: { id: true, name: true, contactLink: true, profileImageUrl: true },
+        select: { id: true, name: true, contactLink: true, profileImageUrl: true, profileImageKey: true },
       },
     },
   });
@@ -288,7 +303,17 @@ export async function getPublicProductById(id: string) {
     throw new AppError("Produto não encontrado", 404);
   }
 
-  return product;
+  return {
+    ...product,
+    media: product.media.map((m) => ({
+      ...m,
+      url: resolveMediaUrl(m.key) ?? m.url,
+    })),
+    user: {
+      ...product.user,
+      profileImageUrl: resolveMediaUrl(product.user.profileImageKey) ?? product.user.profileImageUrl,
+    },
+  };
 }
 
 export async function incrementProductView(id: string) {

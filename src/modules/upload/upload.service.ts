@@ -3,6 +3,7 @@ import { AppError } from "../../shared/errors/AppError.js";
 import { DeleteObjectCommand, DeleteObjectsCommand, PutObjectCommand, CopyObjectCommand } from "@aws-sdk/client-s3";
 import { s3 } from "../../shared/config/s3.js";
 import { env } from "../../shared/config/env.js";
+import { resolveMediaUrl } from "../../shared/utils/resolveMediaUrl.js";
 import type { UploadImageProfileInput } from "./upload.schema.js";
 
 export async function updateProfileImage(
@@ -32,7 +33,7 @@ export async function updateProfileImage(
   } catch (error) {
     try {
       const command = new DeleteObjectCommand({
-        Bucket: env.AWS_BUCKET_NAME!,
+        Bucket: env.R2_BUCKET_NAME,
         Key: data.key,
       });
       await s3.send(command);
@@ -45,7 +46,7 @@ export async function updateProfileImage(
   if (currentUser.profileImageKey) {
     try {
       const command = new DeleteObjectCommand({
-        Bucket: env.AWS_BUCKET_NAME!,
+        Bucket: env.R2_BUCKET_NAME,
         Key: currentUser.profileImageKey,
       });
       await s3.send(command);
@@ -54,7 +55,7 @@ export async function updateProfileImage(
     }
   }
 
-  return { url: data.location };
+  return { url: resolveMediaUrl(data.key) };
 }
 
 import fs from "node:fs";
@@ -121,7 +122,7 @@ export async function processProductMediaUpload(files: Express.Multer.File[], us
        const fileStream = fs.createReadStream(file.path);
        
        await s3.send(new PutObjectCommand({
-         Bucket: env.AWS_BUCKET_NAME!,
+         Bucket: env.R2_BUCKET_NAME,
          Key: key,
          Body: fileStream,
          ContentType: file.detectedMime,
@@ -131,7 +132,7 @@ export async function processProductMediaUpload(files: Express.Multer.File[], us
        fileStream.destroy();
 
        return {
-         url: `https://${env.AWS_BUCKET_NAME}.s3.${env.AWS_REGION}.amazonaws.com/${key}`,
+         url: resolveMediaUrl(key),
          key,
          type: file.type
        };
@@ -148,7 +149,7 @@ export async function processProductMediaUpload(files: Express.Multer.File[], us
        if (successfulKeys.length > 0) {
           try {
              await s3.send(new DeleteObjectsCommand({
-                Bucket: env.AWS_BUCKET_NAME!,
+                Bucket: env.R2_BUCKET_NAME,
                 Delete: { Objects: successfulKeys.map(k => ({ Key: k })) }
              }));
           } catch (cleanupErr) {
@@ -186,7 +187,7 @@ export async function rollbackProductMediaFiles(keys: string[]) {
   try {
     await s3.send(
       new DeleteObjectsCommand({
-        Bucket: env.AWS_BUCKET_NAME!,
+        Bucket: env.R2_BUCKET_NAME,
         Delete: {
           Objects: keys.map((Key) => ({ Key })),
         },
@@ -202,7 +203,7 @@ export async function deleteProductMediaFiles(keys: string[]) {
   try {
     await s3.send(
       new DeleteObjectsCommand({
-        Bucket: env.AWS_BUCKET_NAME!,
+        Bucket: env.R2_BUCKET_NAME,
         Delete: { Objects: keys.map((Key) => ({ Key })) },
       })
     );
@@ -220,12 +221,12 @@ export async function moveProductMediaFiles(
   const uploadPromises = files.map(async (m) => {
     const fileName = m.key.split("/").pop();
     const newKey = `enterprise/${enterpriseId}/products/${productId}/${fileName}`;
-    const newUrl = m.url.replace(m.key, newKey);
+    const newUrl = resolveMediaUrl(newKey);
 
     await s3.send(
       new CopyObjectCommand({
-        Bucket: env.AWS_BUCKET_NAME!,
-        CopySource: `${env.AWS_BUCKET_NAME}/${m.key}`,
+        Bucket: env.R2_BUCKET_NAME,
+        CopySource: `${env.R2_BUCKET_NAME}/${m.key}`,
         Key: newKey,
       })
     );
