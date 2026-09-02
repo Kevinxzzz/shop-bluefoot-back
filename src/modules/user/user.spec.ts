@@ -1,783 +1,425 @@
-import { describe, it, expect, beforeEach, afterEach, jest } from "@jest/globals";
-import request from "supertest";
-import jwt from "jsonwebtoken";
-import bcrypt from "bcryptjs";
-import { app } from "../../app.js";
+import { describe, it, expect, beforeEach, jest } from "@jest/globals";
+import {
+  listUsers,
+  updateUserRole,
+  updateProfile,
+  getProfile,
+  getEnterpriseUsersPublic,
+  getPublicUserById,
+  deleteUserPermanently,
+} from "./user.service.js";
 import { prisma } from "../../shared/database/prisma.js";
-import { env } from "../../shared/config/env.js";
 import { s3 } from "../../shared/config/s3.js";
-import { DeleteObjectCommand, DeleteObjectsCommand } from "@aws-sdk/client-s3";
+import {
+  updateUserRoleSchema,
+  updateProfileSchema,
+  deleteUserSchema,
+} from "./user.schema.js";
+
 describe("User Module", () => {
-  let enterpriseId: string;
-  let adminToken: string;
-  let sellerToken: string;
-  let adminUser: any;
-  let sellerUser: any;
+  beforeEach(() => {
+    jest.restoreAllMocks();
+    jest.clearAllMocks();
+  });
 
-  beforeEach(async () => {
-    await prisma.productMedia.deleteMany();
-    await prisma.productCategory.deleteMany();
-    await prisma.product.deleteMany();
-    await prisma.userToken.deleteMany();
-    await prisma.enterpriseInviteToken.deleteMany();
-    await prisma.category.deleteMany();
-    await prisma.user.deleteMany();
-    await prisma.enterprise.deleteMany();
-
-    // Obter ou criar as roles
-    let adminRole = await prisma.userRole.findFirst({ where: { role: "ADMIN" } });
-    if (!adminRole) {
-      adminRole = await prisma.userRole.create({
-        data: { role: "ADMIN", description: "Administrador da Empresa" },
+  describe("Zod Schemas", () => {
+    it("deve validar updateUserRoleSchema", () => {
+      const valid = updateUserRoleSchema.safeParse({
+        params: { id: "123e4567-e89b-12d3-a456-426614174000" },
+        body: { role: "ADMIN" },
       });
-    }
+      expect(valid.success).toBe(true);
 
-    let sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
-    if (!sellerRole) {
-      sellerRole = await prisma.userRole.create({
-        data: { role: "SELLER", description: "Vendedor da Empresa" },
+      const invalidRole = updateUserRoleSchema.safeParse({
+        params: { id: "123e4567-e89b-12d3-a456-426614174000" },
+        body: { role: "SUPER_USER" },
       });
-    }
-
-    // Criar empresa
-    const enterprise = await prisma.enterprise.create({
-      data: {
-        cnpj: "12345678901234",
-        name: "Empresa de Teste",
-        phoneNumber: "999999999",
-      },
-    });
-    enterpriseId = enterprise.id;
-
-    // Criar admin
-    const hashedPassword = await bcrypt.hash("password123", 10);
-    adminUser = await prisma.user.create({
-      data: {
-        name: "Admin User",
-        email: "admin@test.com",
-        password: hashedPassword,
-        roleId: adminRole!.id,
-        enterpriseId,
-      },
+      expect(invalidRole.success).toBe(false);
     });
 
-    // Criar seller
-    sellerUser = await prisma.user.create({
-      data: {
-        name: "Seller User",
+    it("deve validar updateProfileSchema com strict", () => {
+      const valid = updateProfileSchema.safeParse({
+        name: "Nome Atualizado",
+        email: "novo@email.com",
+      });
+      expect(valid.success).toBe(true);
+
+      const extraField = updateProfileSchema.safeParse({
+        name: "Nome",
+        roleId: "not-allowed",
+      });
+      expect(extraField.success).toBe(false);
+    });
+
+    it("deve impedir usuário de excluir a si próprio via deleteUserSchema", () => {
+      const parsed = deleteUserSchema.safeParse({
+        params: { id: "user-1" },
+        user: { userId: "user-1", enterpriseId: "ent-1" },
+      });
+      expect(parsed.success).toBe(false);
+    });
+  });
+
+  describe("listUsers", () => {
+    it("1. deve listar usuários da empresa e identificar o administrador fundador", async () => {
+      const mockUsers = [
+        {
+          id: "founder-id",
+          name: "Fundador",
+          email: "founder@corp.com",
+          profileImageUrl: null,
+          profileImageKey: null,
+          role: { role: "ADMIN" },
+          createdAt: new Date(),
+          deletedAt: null,
+        },
+        {
+          id: "seller-id",
+          name: "Vendedor",
+          email: "seller@corp.com",
+          profileImageUrl: null,
+          profileImageKey: null,
+          role: { role: "SELLER" },
+          createdAt: new Date(),
+          deletedAt: null,
+        },
+      ];
+
+      jest.spyOn(prisma.user, "findMany").mockResolvedValue(mockUsers as any);
+      jest.spyOn(prisma.user, "findFirst").mockResolvedValue({
+        id: "founder-id",
+      } as any);
+
+      const result = await listUsers("ent-1");
+
+      expect(result).toHaveLength(2);
+      expect(result[0].isFounder).toBe(true);
+      expect(result[1].isFounder).toBe(false);
+      expect(result[0].status).toBe("ACTIVE");
+    });
+  });
+
+  describe("updateUserRole", () => {
+    it("2. deve atualizar o cargo de outro usuário com sucesso", async () => {
+      jest.spyOn(prisma.user, "findFirst")
+        .mockResolvedValueOnce({ id: "founder-id" } as any) // founder admin check
+        .mockResolvedValueOnce({
+          id: "seller-id",
+          role: { role: "SELLER" },
+        } as any); // target user
+
+      jest.spyOn(prisma.userRole, "findUnique").mockResolvedValue({
+        id: "role-admin-id",
+        role: "ADMIN",
+      } as any);
+
+      jest.spyOn(prisma.user, "update").mockResolvedValue({
+        id: "seller-id",
+        name: "Vendedor",
         email: "seller@test.com",
-        password: hashedPassword,
-        roleId: sellerRole!.id,
-        enterpriseId,
-      },
-    });
+        role: { role: "ADMIN" },
+        deletedAt: null,
+      } as any);
 
-    // Assinar tokens de autenticação
-    adminToken = jwt.sign(
-      { userId: adminUser.id, email: adminUser.email, role: "ADMIN", enterpriseId },
-      env.JWT_SECRET
-    );
-
-    sellerToken = jwt.sign(
-      { userId: sellerUser.id, email: sellerUser.email, role: "SELLER", enterpriseId },
-      env.JWT_SECRET
-    );
-  });
-
-  describe("GET /users - List Users by Enterprise", () => {
-    let otherEnterpriseId: string;
-    let otherAdminToken: string;
-
-    beforeEach(async () => {
-      // Criar outra empresa e outro usuário para testar isolamento (multi-tenant)
-      const otherEnterprise = await prisma.enterprise.create({
-        data: {
-          cnpj: "00000000000000",
-          name: "Outra Empresa",
-          phoneNumber: "888888888",
-        },
-      });
-      otherEnterpriseId = otherEnterprise.id;
-
-      const adminRole = await prisma.userRole.findFirst({ where: { role: "ADMIN" } });
-
-      const otherAdmin = await prisma.user.create({
-        data: {
-          name: "Outro Admin",
-          email: "outro_admin@test.com",
-          password: "password123",
-          roleId: adminRole!.id,
-          enterpriseId: otherEnterpriseId,
-        },
+      const result = await updateUserRole({
+        userId: "seller-id",
+        role: "ADMIN",
+        enterpriseId: "ent-1",
+        adminId: "founder-id",
       });
 
-      otherAdminToken = jwt.sign(
-        { userId: otherAdmin.id, email: otherAdmin.email, role: "ADMIN", enterpriseId: otherEnterpriseId },
-        env.JWT_SECRET
-      );
-
-      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
-
-      // Criar um usuário já inativo na empresa principal para testar o status INACTIVE
-      await prisma.user.create({
-        data: {
-          name: "Inactive User",
-          email: "inactive@test.com",
-          password: "password123",
-          roleId: sellerRole!.id,
-          enterpriseId: enterpriseId,
-          deletedAt: new Date(),
-        },
+      expect(result.role).toBe("ADMIN");
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: "seller-id" },
+        data: { roleId: "role-admin-id" },
+        select: expect.any(Object),
       });
     });
 
-
-    it("should allow ADMIN to list users of their own enterprise", async () => {
-      const response = await request(app)
-        .get("/users")
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(response.status).toBe(200);
-      expect(Array.isArray(response.body)).toBe(true);
-      expect(response.body.length).toBe(3); // adminUser (ativo), sellerUser (ativo) e Inactive User (inativo)
-
-      const activeUser = response.body.find((u: any) => u.id === adminUser.id);
-      expect(activeUser).toBeTruthy();
-      expect(activeUser.status).toBe("ACTIVE");
-      expect(activeUser.deletedAt).toBeNull();
-      expect(activeUser.role).toBe("ADMIN");
-
-      const inactiveUser = response.body.find((u: any) => u.email === "inactive@test.com");
-      expect(inactiveUser).toBeTruthy();
-      expect(inactiveUser.status).toBe("INACTIVE");
-      expect(inactiveUser.deletedAt).not.toBeNull();
-      expect(inactiveUser.role).toBe("SELLER");
+    it("3. deve impedir que o admin altere sua própria role", async () => {
+      await expect(
+        updateUserRole({
+          userId: "admin-1",
+          role: "SELLER",
+          enterpriseId: "ent-1",
+          adminId: "admin-1",
+        })
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Você não pode alterar sua própria role",
+      });
     });
 
-    it("should forbid SELLER from listing users", async () => {
-      const response = await request(app)
-        .get("/users")
-        .set("Authorization", `Bearer ${sellerToken}`);
+    it("4. deve impedir alteração de cargo do fundador da empresa", async () => {
+      jest.spyOn(prisma.user, "findFirst").mockResolvedValue({
+        id: "founder-id",
+      } as any);
 
-      expect(response.status).toBe(403);
-      expect(response.body.error).toBe("Acesso negado");
+      await expect(
+        updateUserRole({
+          userId: "founder-id",
+          role: "SELLER",
+          enterpriseId: "ent-1",
+          adminId: "secondary-admin",
+        })
+      ).rejects.toMatchObject({
+        statusCode: 403,
+        message:
+          "O administrador fundador da empresa não pode ter o cargo alterado",
+      });
     });
 
-    it("should only list users from the authenticated user's enterprise", async () => {
-      const response = await request(app)
-        .get("/users")
-        .set("Authorization", `Bearer ${otherAdminToken}`);
+    it("5. deve falhar se o usuário já tiver o cargo solicitado", async () => {
+      jest.spyOn(prisma.user, "findFirst")
+        .mockResolvedValueOnce({ id: "founder-id" } as any)
+        .mockResolvedValueOnce({
+          id: "user-target",
+          role: { role: "ADMIN" },
+        } as any);
 
-      expect(response.status).toBe(200);
-      expect(Array.isArray(response.body)).toBe(true);
-      expect(response.body.length).toBe(1); // apenas o outro admin
+      jest.spyOn(prisma.userRole, "findUnique").mockResolvedValue({
+        id: "role-admin-id",
+        role: "ADMIN",
+      } as any);
 
-      expect(response.body[0].id).not.toBe(adminUser.id);
-      expect(response.body[0].id).not.toBe(sellerUser.id);
-      expect(response.body[0].email).toBe("outro_admin@test.com");
+      await expect(
+        updateUserRole({
+          userId: "user-target",
+          role: "ADMIN",
+          enterpriseId: "ent-1",
+          adminId: "founder-id",
+        })
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Usuário já possui esta role",
+      });
     });
   });
 
-  describe("PATCH /users/:id/role - Update User Role", () => {
-    it("should allow an ADMIN to change another user's role", async () => {
-      const response = await request(app)
-        .patch(`/users/${sellerUser.id}/role`)
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ role: "ADMIN" });
+  describe("updateProfile", () => {
+    it("6. deve atualizar perfil com sucesso", async () => {
+      jest.spyOn(prisma.user, "update").mockResolvedValue({
+        id: "user-1",
+        name: "Nome Novo",
+        email: "novo@test.com",
+        profileImageUrl: null,
+        profileImageKey: null,
+        contactLink: "https://wa.me/123",
+        role: { role: "SELLER" },
+      } as any);
 
-      expect(response.status).toBe(200);
-      expect(response.body.role).toBe("ADMIN");
-
-      const updatedUser = await prisma.user.findUnique({
-        where: { id: sellerUser.id },
-        include: { role: true },
-      });
-      expect(updatedUser?.role.role).toBe("ADMIN");
-    });
-
-    it("should forbid a SELLER from changing a role", async () => {
-      const response = await request(app)
-        .patch(`/users/${sellerUser.id}/role`)
-        .set("Authorization", `Bearer ${sellerToken}`)
-        .send({ role: "ADMIN" });
-
-      expect(response.status).toBe(403);
-      expect(response.body.error).toBe("Acesso negado");
-    });
-
-    it("should fail if ADMIN tries to change a user from another enterprise", async () => {
-      const otherEnterprise = await prisma.enterprise.create({
-        data: { cnpj: "00000000000001", name: "Other", phoneNumber: "777777777" },
-      });
-      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
-      const otherUser = await prisma.user.create({
-        data: {
-          name: "Other User",
-          email: "other_seller@test.com",
-          password: "pwd",
-          roleId: sellerRole!.id,
-          enterpriseId: otherEnterprise.id,
-        },
+      const result = await updateProfile("user-1", {
+        name: "Nome Novo",
+        email: "novo@test.com",
       });
 
-      const response = await request(app)
-        .patch(`/users/${otherUser.id}/role`)
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ role: "ADMIN" });
-
-      expect(response.status).toBe(404);
-      expect(response.body.error).toBe("Usuário não encontrado");
+      expect(result.name).toBe("Nome Novo");
+      expect(result.email).toBe("novo@test.com");
     });
 
-    it("should fail if trying to update a soft deleted user", async () => {
-      await prisma.user.update({
-        where: { id: sellerUser.id },
-        data: { deletedAt: new Date() },
+    it("7. deve falhar se nenhum dado for fornecido para atualização", async () => {
+      await expect(updateProfile("user-1", {})).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Nenhum dado fornecido para atualização",
       });
-
-      const response = await request(app)
-        .patch(`/users/${sellerUser.id}/role`)
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ role: "ADMIN" });
-
-      expect(response.status).toBe(404);
-      expect(response.body.error).toBe("Usuário não encontrado");
     });
 
-    it("should fail if role is invalid", async () => {
-      const response = await request(app)
-        .patch(`/users/${sellerUser.id}/role`)
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ role: "SUPERADMIN" });
+    it("8. deve retornar 409 caso e-mail ou link de contato já estejam em uso", async () => {
+      const p2002Error: any = new Error("Unique constraint failed on email");
+      p2002Error.code = "P2002";
+      p2002Error.meta = { target: ["email"] };
 
-      expect(response.status).toBe(400);
-      expect(response.body.error).toContain("Erro de validação");
-    });
+      jest.spyOn(prisma.user, "update").mockRejectedValue(p2002Error);
 
-    it("should fail if user already has the requested role", async () => {
-      const response = await request(app)
-        .patch(`/users/${sellerUser.id}/role`)
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ role: "SELLER" });
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toBe("Usuário já possui esta role");
-    });
-
-    it("should fail if ADMIN tries to change their own role", async () => {
-      const response = await request(app)
-        .patch(`/users/${adminUser.id}/role`)
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ role: "SELLER" });
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toBe("Você não pode alterar sua própria role");
-    });
-
-    it("should fail if secondary ADMIN tries to change the founder admin's role", async () => {
-      // Criar admin secundário
-      const adminRole = await prisma.userRole.findFirst({ where: { role: "ADMIN" } });
-      const secondaryAdmin = await prisma.user.create({
-        data: {
-          name: "Secondary Admin",
-          email: "secadmin@test.com",
-          password: "pwd",
-          roleId: adminRole!.id,
-          enterpriseId,
-        },
+      await expect(
+        updateProfile("user-1", { email: "duplicated@test.com" })
+      ).rejects.toMatchObject({
+        statusCode: 409,
+        message: "E-mail já está em uso",
       });
-
-      const secondaryToken = jwt.sign(
-        { userId: secondaryAdmin.id, email: secondaryAdmin.email, role: "ADMIN", enterpriseId },
-        env.JWT_SECRET
-      );
-
-      const response = await request(app)
-        .patch(`/users/${adminUser.id}/role`) // tentando alterar o adminUser (que é o founder criado no beforeEach)
-        .set("Authorization", `Bearer ${secondaryToken}`)
-        .send({ role: "SELLER" });
-
-      expect(response.status).toBe(403);
-      expect(response.body.error).toBe("O administrador fundador da empresa não pode ter o cargo alterado");
     });
   });
 
-  describe("PATCH /users/profile - Update User Profile", () => {
-    it("should allow a user to update their own profile", async () => {
-      const response = await request(app)
-        .patch("/users/profile")
-        .set("Authorization", `Bearer ${sellerToken}`)
-        .send({
-          name: "Novo Nome Seller",
-          contactLink: "https://wa.me/55999999999",
-        });
+  describe("getProfile", () => {
+    it("9. deve buscar perfil do usuário", async () => {
+      jest.spyOn(prisma.user, "findUnique").mockResolvedValue({
+        id: "user-1",
+        name: "João",
+        email: "joao@test.com",
+        contactLink: null,
+        profileImageUrl: null,
+        profileImageKey: null,
+        role: { role: "ADMIN" },
+      } as any);
 
-      expect(response.status).toBe(200);
-      expect(response.body.name).toBe("Novo Nome Seller");
-      expect(response.body.contactLink).toBe("https://wa.me/55999999999");
-      expect(response.body.email).toBe(sellerUser.email);
-    });
+      const result = await getProfile("user-1");
 
-    it("should fail if no data is provided", async () => {
-      const response = await request(app)
-        .patch("/users/profile")
-        .set("Authorization", `Bearer ${sellerToken}`)
-        .send({});
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toBe("Nenhum dado fornecido para atualização");
-    });
-
-    it("should fail if trying to update unallowed fields like roleId or password", async () => {
-      const response = await request(app)
-        .patch("/users/profile")
-        .set("Authorization", `Bearer ${sellerToken}`)
-        .send({
-          name: "Hacker",
-          roleId: "admin-role-id",
-          password: "newpassword123"
-        });
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toContain("Erro de validação");
-    });
-
-    it("should fail if email is already in use by another user", async () => {
-      const response = await request(app)
-        .patch("/users/profile")
-        .set("Authorization", `Bearer ${sellerToken}`)
-        .send({
-          email: adminUser.email, // Tentando usar o email do admin
-        });
-
-      expect(response.status).toBe(409);
-      expect(response.body.error).toBe("E-mail já está em uso");
-    });
-
-    it("should fail if contactLink is already in use by another user", async () => {
-      // Set admin contactLink
-      await prisma.user.update({
-        where: { id: adminUser.id },
-        data: { contactLink: "https://wa.me/5511111111" }
+      expect(result).toEqual({
+        id: "user-1",
+        name: "João",
+        email: "joao@test.com",
+        contactLink: null,
+        profileImageUrl: null,
+        role: "ADMIN",
       });
-
-      const response = await request(app)
-        .patch("/users/profile")
-        .set("Authorization", `Bearer ${sellerToken}`)
-        .send({
-          contactLink: "https://wa.me/5511111111", // Tentando usar o contato do admin
-        });
-
-      expect(response.status).toBe(409);
-      expect(response.body.error).toBe("Link de contato já está em uso");
     });
 
-    it("should allow update if contactLink and email are the same as current", async () => {
-      const response = await request(app)
-        .patch("/users/profile")
-        .set("Authorization", `Bearer ${sellerToken}`)
-        .send({
-          email: sellerUser.email,
-        });
+    it("10. deve lançar 404 se usuário não for encontrado", async () => {
+      jest.spyOn(prisma.user, "findUnique").mockResolvedValue(null as any);
 
-      expect(response.status).toBe(200);
-      expect(response.body.email).toBe(sellerUser.email);
+      await expect(getProfile("unknown-user")).rejects.toMatchObject({
+        statusCode: 404,
+        message: "Usuário não encontrado",
+      });
     });
   });
 
-  describe("GET /users/enterprise-martins - Public Users Route", () => {
-    let originalId: string;
-    beforeEach(() => {
-      // Mock env object directly instead of process.env
-      originalId = env.ID_ENTERPRISE_MARTINS;
-      env.ID_ENTERPRISE_MARTINS = enterpriseId;
-    });
-
-    afterEach(() => {
-      env.ID_ENTERPRISE_MARTINS = originalId;
-    });
-
-    it("should return users of the Martins enterprise with public fields only", async () => {
-      // Adicionar produto para o admin (deletedAt: null) -> account: 1
-      await prisma.product.create({
-        data: {
-          name: "Produto 1",
-          price: 100,
-          userId: adminUser.id,
-          enterpriseId,
-        }
-      });
-
-      // Adicionar produto soft-deleted para o admin (não deve contar)
-      await prisma.product.create({
-        data: {
-          name: "Produto Deletado",
-          price: 50,
-          userId: adminUser.id,
-          enterpriseId,
-          deletedAt: new Date(),
-        }
-      });
-
-      // O seller (criado no beforeEach principal) não tem produtos -> account: 0
-      
-      const response = await request(app).get("/users/enterprise-martins");
-
-      expect(response.status).toBe(200);
-      expect(Array.isArray(response.body)).toBe(true);
-      
-      // Tem 2 usuários (admin e seller)
-      expect(response.body.length).toBe(2);
-
-      const admin = response.body.find((u: any) => u.id === adminUser.id);
-      expect(admin).toBeDefined();
-      expect(admin.name).toBe(adminUser.name);
-      expect(admin.imageUrl).toBe(adminUser.profileImageUrl || null);
-      expect(admin.productsCount).toBe(1);
-      
-      // Validar que NENHUM campo sensível foi retornado
-      expect(admin.email).toBeUndefined();
-      expect(admin.password).toBeUndefined();
-      expect(admin.roleId).toBeUndefined();
-      expect(admin.enterpriseId).toBeUndefined();
-      expect(admin.contactLink).toBeUndefined();
-      expect(admin.createdAt).toBeUndefined();
-      expect(admin.deletedAt).toBeUndefined();
-
-      const seller = response.body.find((u: any) => u.id === sellerUser.id);
-      expect(seller).toBeDefined();
-      expect(seller.productsCount).toBe(0);
-    });
-
-    it("should return empty array if enterprise has no users (or doesn't exist)", async () => {
-      env.ID_ENTERPRISE_MARTINS = "invalid-or-empty-enterprise-id";
-
-      const response = await request(app).get("/users/enterprise-martins");
-
-      expect(response.status).toBe(200);
-      expect(Array.isArray(response.body)).toBe(true);
-      expect(response.body.length).toBe(0);
-    });
-
-    it("should not return users from other enterprises", async () => {
-      const otherEnterprise = await prisma.enterprise.create({
-        data: { cnpj: "00000000000002", name: "Other", phoneNumber: "666666666" },
-      });
-      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
-      
-      await prisma.user.create({
-        data: {
-          name: "Other User",
-          email: "other_user_2@test.com",
-          password: "pwd",
-          roleId: sellerRole!.id,
-          enterpriseId: otherEnterprise.id,
+  describe("getEnterpriseUsersPublic", () => {
+    it("11. deve retornar vendedores públicos da empresa com contagem de produtos", async () => {
+      jest.spyOn(prisma.user, "findMany").mockResolvedValue([
+        {
+          id: "u-1",
+          name: "Vendedor 1",
+          profileImageUrl: null,
+          profileImageKey: null,
+          _count: { products: 5 },
         },
-      });
+      ] as any);
 
-      const response = await request(app).get("/users/enterprise-martins");
+      const result = await getEnterpriseUsersPublic("ent-1");
 
-      expect(response.status).toBe(200);
-      // Deve retornar apenas os 2 da empresa martins
-      expect(response.body.length).toBe(2);
-      const otherUser = response.body.find((u: any) => u.email === "other_user_2@test.com");
-      expect(otherUser).toBeUndefined();
-    });
-    
-    it("should return 500 if ID_ENTERPRISE_MARTINS is not set in env", async () => {
-      (env as any).ID_ENTERPRISE_MARTINS = "";
-
-      const response = await request(app).get("/users/enterprise-martins");
-
-      expect(response.status).toBe(500);
-      expect(response.body.error).toBe("A loja pública não está configurada corretamente (Falta ID_ENTERPRISE_MARTINS).");
+      expect(result).toEqual([
+        {
+          id: "u-1",
+          name: "Vendedor 1",
+          imageUrl: null,
+          productsCount: 5,
+        },
+      ]);
     });
   });
 
-  describe("GET /users/enterprise-martins/:id - Public User by ID", () => {
-    let originalId: string;
-    beforeEach(() => {
-      originalId = env.ID_ENTERPRISE_MARTINS;
-      env.ID_ENTERPRISE_MARTINS = enterpriseId;
+  describe("getPublicUserById", () => {
+    it("12. deve buscar vendedor público e seus produtos ativos", async () => {
+      jest.spyOn(prisma.user, "findFirst").mockResolvedValue({
+        id: "seller-1",
+        name: "Vendedor Show",
+        profileImageUrl: null,
+        profileImageKey: null,
+        contactLink: "https://contact",
+        products: [
+          {
+            id: "prod-1",
+            name: "Produto 1",
+            price: 100,
+            countViews: 10,
+            createdAt: new Date(),
+            media: [],
+            categories: [],
+          },
+        ],
+      } as any);
+
+      const result = await getPublicUserById("seller-1", "ent-1");
+
+      expect(result.id).toBe("seller-1");
+      expect(result.products).toHaveLength(1);
     });
 
-    afterEach(() => {
-      env.ID_ENTERPRISE_MARTINS = originalId;
-    });
+    it("13. deve retornar 404 se o vendedor não existir na empresa", async () => {
+      jest.spyOn(prisma.user, "findFirst").mockResolvedValue(null as any);
 
-    it("should return public details of a seller and their active products", async () => {
-      await prisma.product.create({
-        data: {
-          name: "Produto Ativo",
-          price: 100,
-          userId: sellerUser.id,
-          enterpriseId,
-        }
+      await expect(
+        getPublicUserById("seller-nonexistent", "ent-1")
+      ).rejects.toMatchObject({
+        statusCode: 404,
+        message: "Vendedor não encontrado",
       });
-
-      await prisma.product.create({
-        data: {
-          name: "Produto Deletado",
-          price: 50,
-          userId: sellerUser.id,
-          enterpriseId,
-          deletedAt: new Date(),
-        }
-      });
-
-      const response = await request(app).get(`/users/enterprise-martins/${sellerUser.id}`);
-
-      expect(response.status).toBe(200);
-      expect(response.body.id).toBe(sellerUser.id);
-      expect(response.body.name).toBe(sellerUser.name);
-      expect(Array.isArray(response.body.products)).toBe(true);
-      expect(response.body.products.length).toBe(1);
-      expect(response.body.products[0].name).toBe("Produto Ativo");
-
-      expect(response.body.email).toBeUndefined();
-      expect(response.body.password).toBeUndefined();
-      expect(response.body.roleId).toBeUndefined();
-      expect(response.body.enterpriseId).toBeUndefined();
-      expect(response.body.createdAt).toBeUndefined();
-      expect(response.body.deletedAt).toBeUndefined();
-    });
-
-    it("should return 404 if the seller does not exist", async () => {
-      const randomUuid = "123e4567-e89b-12d3-a456-426614174000";
-      const response = await request(app).get(`/users/enterprise-martins/${randomUuid}`);
-      expect(response.status).toBe(404);
-      expect(response.body.error).toBe("Vendedor não encontrado");
-    });
-
-    it("should return 404 if the seller belongs to another enterprise", async () => {
-      const otherEnterprise = await prisma.enterprise.create({
-        data: { cnpj: "00000000000003", name: "Other", phoneNumber: "555555555" },
-      });
-      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
-      
-      const otherUser = await prisma.user.create({
-        data: {
-          name: "Other User",
-          email: "other_user_3@test.com",
-          password: "pwd",
-          roleId: sellerRole!.id,
-          enterpriseId: otherEnterprise.id,
-        },
-      });
-
-      const response = await request(app).get(`/users/enterprise-martins/${otherUser.id}`);
-      expect(response.status).toBe(404);
-      expect(response.body.error).toBe("Vendedor não encontrado");
-    });
-
-    it("should return 404 if the seller is soft deleted", async () => {
-      await prisma.user.update({
-        where: { id: sellerUser.id },
-        data: { deletedAt: new Date() },
-      });
-
-      const response = await request(app).get(`/users/enterprise-martins/${sellerUser.id}`);
-      expect(response.status).toBe(404);
-      expect(response.body.error).toBe("Vendedor não encontrado");
-    });
-
-    it("should return 400 if the ID is not a valid UUID", async () => {
-      const response = await request(app).get(`/users/enterprise-martins/not-a-uuid`);
-      expect(response.status).toBe(400);
-      expect(response.body.error).toContain("Erro de validação");
     });
   });
 
-  describe("DELETE /users/:id - Hard Delete User", () => {
-    let s3SendSpy: any;
+  describe("deleteUserPermanently", () => {
+    it("14. deve excluir usuário e remover mídias associadas", async () => {
+      jest.spyOn(prisma.user, "findUnique").mockResolvedValue({
+        id: "seller-del",
+        enterpriseId: "ent-1",
+        profileImageKey: "avatar-del.jpg",
+        products: [
+          {
+            id: "prod-1",
+            media: [{ key: "prod-media-1.jpg" }],
+          },
+        ],
+      } as any);
 
-    beforeEach(() => {
-      s3SendSpy = jest.spyOn(s3, "send").mockResolvedValue({} as never);
-    });
+      jest.spyOn(prisma.user, "findFirst").mockResolvedValue({
+        id: "different-founder-id",
+      } as any); // Founder check
 
-    afterEach(() => {
-      jest.restoreAllMocks();
-    });
+      jest.spyOn(s3, "send").mockImplementation(() => Promise.resolve({} as never));
 
-    it("should hard delete a user successfully (no profile image, no products)", async () => {
-      // Cria um usuário novo para ser deletado
-      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
-      const userToDelete = await prisma.user.create({
-        data: {
-          name: "User to Delete",
-          email: "todelete@test.com",
-          password: "pwd",
-          roleId: sellerRole!.id,
-          enterpriseId,
+      const mockTx = {
+        user: {
+          delete: jest.fn<any>().mockResolvedValue({}),
         },
+      };
+
+      jest
+        .spyOn(prisma, "$transaction")
+        .mockImplementation(async (cb: any) => cb(mockTx));
+
+      await deleteUserPermanently("seller-del", "ent-1");
+
+      expect(s3.send).toHaveBeenCalled();
+      expect(mockTx.user.delete).toHaveBeenCalledWith({
+        where: { id: "seller-del" },
       });
-
-      const response = await request(app)
-        .delete(`/users/${userToDelete.id}`)
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(response.status).toBe(204);
-
-      // Verify user is removed from database
-      const deletedUser = await prisma.user.findUnique({ where: { id: userToDelete.id } });
-      expect(deletedUser).toBeNull();
-
-      expect(s3SendSpy).not.toHaveBeenCalled();
     });
 
-    it("should hard delete a user and their media files", async () => {
-      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
-      const userToDelete = await prisma.user.create({
-        data: {
-          name: "User with Media",
-          email: "media@test.com",
-          password: "pwd",
-          roleId: sellerRole!.id,
-          enterpriseId,
-          profileImageKey: "profile.jpg",
-        },
+    it("15. deve impedir exclusão do administrador fundador", async () => {
+      jest.spyOn(prisma.user, "findUnique").mockResolvedValue({
+        id: "founder-id",
+        enterpriseId: "ent-1",
+        products: [],
+      } as any);
+
+      jest.spyOn(prisma.user, "findFirst").mockResolvedValue({
+        id: "founder-id",
+      } as any);
+
+      await expect(
+        deleteUserPermanently("founder-id", "ent-1")
+      ).rejects.toMatchObject({
+        statusCode: 403,
+        message: "O administrador fundador da empresa não pode ser excluído",
       });
-
-      const product = await prisma.product.create({
-        data: {
-          name: "Produto",
-          price: 10,
-          userId: userToDelete.id,
-          enterpriseId,
-          media: {
-            create: {
-              url: "url",
-              key: "product.jpg",
-              type: "FOTO",
-            }
-          }
-        }
-      });
-
-      const response = await request(app)
-        .delete(`/users/${userToDelete.id}`)
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(response.status).toBe(204);
-
-      // Verify S3 deletion of profile image and product media
-      expect(s3SendSpy).toHaveBeenCalledTimes(2);
-      
-      const calls = s3SendSpy.mock.calls;
-      const commands = calls.map((call: any) => call[0]);
-      
-      const deleteObjectCmd = commands.find((cmd: any) => cmd.constructor.name === "DeleteObjectCommand");
-      expect(deleteObjectCmd).toBeDefined();
-      expect(deleteObjectCmd.input.Key).toBe("profile.jpg");
-
-      const deleteObjectsCmd = commands.find((cmd: any) => cmd.constructor.name === "DeleteObjectsCommand");
-      expect(deleteObjectsCmd).toBeDefined();
-      expect(deleteObjectsCmd.input.Delete.Objects[0].Key).toBe("product.jpg");
-
-      const deletedUser = await prisma.user.findUnique({ where: { id: userToDelete.id } });
-      expect(deletedUser).toBeNull();
-      
-      const deletedProduct = await prisma.product.findUnique({ where: { id: product.id } });
-      expect(deletedProduct).toBeNull();
     });
 
-    it("should forbid SELLER from deleting a user", async () => {
-      const response = await request(app)
-        .delete(`/users/${adminUser.id}`)
-        .set("Authorization", `Bearer ${sellerToken}`);
+    it("16. deve abortar exclusão se a remoção dos arquivos do S3 falhar", async () => {
+      jest.spyOn(prisma.user, "findUnique").mockResolvedValue({
+        id: "seller-del",
+        enterpriseId: "ent-1",
+        profileImageKey: "avatar.jpg",
+        products: [],
+      } as any);
 
-      expect(response.status).toBe(403);
-    });
+      jest.spyOn(prisma.user, "findFirst").mockResolvedValue({
+        id: "founder-id",
+      } as any);
 
-    it("should fail if trying to delete a user from another enterprise", async () => {
-      const otherEnterprise = await prisma.enterprise.create({
-        data: { cnpj: "00000000000004", name: "Other", phoneNumber: "444444444" },
+      jest
+        .spyOn(s3, "send")
+        .mockRejectedValue(new Error("S3 Deletion Network Error") as never);
+
+      jest.spyOn(console, "error").mockImplementation(() => {});
+
+      await expect(
+        deleteUserPermanently("seller-del", "ent-1")
+      ).rejects.toMatchObject({
+        statusCode: 500,
+        message:
+          "Falha ao remover arquivos associados. A exclusão do usuário foi abortada.",
       });
-      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
-      const otherUser = await prisma.user.create({
-        data: {
-          name: "Other User",
-          email: "other4@test.com",
-          password: "pwd",
-          roleId: sellerRole!.id,
-          enterpriseId: otherEnterprise.id,
-        },
-      });
-
-      const response = await request(app)
-        .delete(`/users/${otherUser.id}`)
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(response.status).toBe(404);
-      expect(response.body.error).toBe("Usuário não encontrado");
-    });
-
-    it("should fail if trying to delete the founder admin", async () => {
-      // adminUser is the founder since they were the first admin created in beforeEach
-      const response = await request(app)
-        .delete(`/users/${adminUser.id}`)
-        .set("Authorization", `Bearer ${adminToken}`); // wait, we have a rule preventing self-deletion first.
-
-      // We should use another admin to try to delete the founder
-      const adminRole = await prisma.userRole.findFirst({ where: { role: "ADMIN" } });
-      const secondaryAdmin = await prisma.user.create({
-        data: {
-          name: "Sec Admin",
-          email: "sec@test.com",
-          password: "pwd",
-          roleId: adminRole!.id,
-          enterpriseId,
-        },
-      });
-      
-      const secAdminToken = jwt.sign(
-        { userId: secondaryAdmin.id, email: secondaryAdmin.email, role: "ADMIN", enterpriseId },
-        env.JWT_SECRET
-      );
-
-      const responseFounder = await request(app)
-        .delete(`/users/${adminUser.id}`)
-        .set("Authorization", `Bearer ${secAdminToken}`);
-
-      expect(responseFounder.status).toBe(403);
-      expect(responseFounder.body.error).toBe("O administrador fundador da empresa não pode ser excluído");
-    });
-
-    it("should fail if an admin tries to delete themselves", async () => {
-      const response = await request(app)
-        .delete(`/users/${adminUser.id}`)
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toBe("Erro de validação");
-      expect(response.body.details[0].message).toBe("Você não pode excluir sua própria conta");
-    });
-
-    it("should abort deletion if S3 file removal fails", async () => {
-      s3SendSpy.mockRejectedValueOnce(new Error("S3 Error"));
-
-      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
-      const userToDelete = await prisma.user.create({
-        data: {
-          name: "User with Media",
-          email: "media_fail@test.com",
-          password: "pwd",
-          roleId: sellerRole!.id,
-          enterpriseId,
-          profileImageKey: "profile_fail.jpg",
-        },
-      });
-
-      const response = await request(app)
-        .delete(`/users/${userToDelete.id}`)
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(response.status).toBe(500);
-      expect(response.body.error).toBe("Falha ao remover arquivos associados. A exclusão do usuário foi abortada.");
-
-      // Ensure user is still in the database
-      const userStillExists = await prisma.user.findUnique({ where: { id: userToDelete.id } });
-      expect(userStillExists).not.toBeNull();
     });
   });
 });

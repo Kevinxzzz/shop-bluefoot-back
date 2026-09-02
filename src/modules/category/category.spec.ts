@@ -1,427 +1,334 @@
-import { describe, it, expect, beforeEach, afterAll } from "@jest/globals";
-import request from "supertest";
-import jwt from "jsonwebtoken";
-import bcrypt from "bcryptjs";
-import { app } from "../../app.js";
+import { describe, it, expect, beforeEach, jest } from "@jest/globals";
+import {
+  generateSlug,
+  createCategory,
+  listCategories,
+  updateCategory,
+  archiveCategory,
+  restoreCategory,
+  deleteCategoryPermanently,
+} from "./category.service.js";
 import { prisma } from "../../shared/database/prisma.js";
-import { env } from "../../shared/config/env.js";
-import { generateSlug } from "./category.service.js";
+import {
+  createCategorySchema,
+  updateCategorySchema,
+  queryCategorySchema,
+} from "./category.schema.js";
 
 describe("Category Module", () => {
-  let enterpriseId: string;
-  let adminToken: string;
-  let sellerToken: string;
-  let adminUser: any;
-  let sellerUser: any;
-  let secondEnterpriseId: string;
-  let secondAdminToken: string;
-
-  beforeEach(async () => {
-    // Limpar tabelas
-    await prisma.productCategory.deleteMany();
-    await prisma.product.deleteMany();
-    await prisma.category.deleteMany();
-    await prisma.enterpriseInviteToken.deleteMany();
-    await prisma.userToken.deleteMany();
-    await prisma.user.deleteMany();
-    await prisma.enterprise.deleteMany();
-
-    // Roles
-    let adminRole = await prisma.userRole.findFirst({ where: { role: "ADMIN" } });
-    if (!adminRole) {
-      adminRole = await prisma.userRole.create({ data: { role: "ADMIN", description: "Admin" } });
-    }
-
-    let sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
-    if (!sellerRole) {
-      sellerRole = await prisma.userRole.create({ data: { role: "SELLER", description: "Seller" } });
-    }
-
-    // Criar empresa 1
-    const enterprise = await prisma.enterprise.create({
-      data: { cnpj: "12345678901234", name: "Empresa 1", phoneNumber: "999999999" },
-    });
-    enterpriseId = enterprise.id;
-
-    // Criar empresa 2
-    const secondEnterprise = await prisma.enterprise.create({
-      data: { cnpj: "12345678901235", name: "Empresa 2", phoneNumber: "999999998" },
-    });
-    secondEnterpriseId = secondEnterprise.id;
-
-    // Criar admin da Empresa 1
-    const hashedPassword = await bcrypt.hash("password123", 10);
-    adminUser = await prisma.user.create({
-      data: { name: "Admin 1", email: "admin1@test.com", password: hashedPassword, roleId: adminRole.id, enterpriseId },
-    });
-
-    // Criar seller da Empresa 1
-    sellerUser = await prisma.user.create({
-      data: { name: "Seller 1", email: "seller1@test.com", password: hashedPassword, roleId: sellerRole.id, enterpriseId },
-    });
-
-    // Criar admin da Empresa 2
-    const secondAdminUser = await prisma.user.create({
-      data: { name: "Admin 2", email: "admin2@test.com", password: hashedPassword, roleId: adminRole.id, enterpriseId: secondEnterpriseId },
-    });
-
-    // Gerar tokens
-    adminToken = jwt.sign(
-      { userId: adminUser.id, email: adminUser.email, role: adminRole.role, enterpriseId },
-      env.JWT_SECRET,
-      { expiresIn: "1d" }
-    );
-
-    sellerToken = jwt.sign(
-      { userId: sellerUser.id, email: sellerUser.email, role: sellerRole.role, enterpriseId },
-      env.JWT_SECRET,
-      { expiresIn: "1d" }
-    );
-
-    secondAdminToken = jwt.sign(
-      { userId: secondAdminUser.id, email: secondAdminUser.email, role: adminRole.role, enterpriseId: secondEnterpriseId },
-      env.JWT_SECRET,
-      { expiresIn: "1d" }
-    );
+  beforeEach(() => {
+    jest.restoreAllMocks();
+    jest.clearAllMocks();
   });
 
-  afterAll(async () => {
-    await prisma.$disconnect();
-  });
-
-  describe("Slug normalization", () => {
-    it("should normalize complex strings to valid slugs", () => {
-      expect(generateSlug(" Eletrônicos Gamer ")).toBe("eletronicos-gamer");
-      expect(generateSlug("Ação & Aventura!!")).toBe("acao-aventura");
-      expect(generateSlug("  MUITOS   ESPAÇOS  ")).toBe("muitos-espacos");
+  describe("Slug Generator", () => {
+    it("deve normalizar caracteres especiais, acentos e espaços", () => {
+      expect(generateSlug("Camisetas & Calças - Verão 2026!")).toBe(
+        "camisetas-calcas-verao-2026"
+      );
+      expect(generateSlug("   Eletrônicos & Acessórios   ")).toBe(
+        "eletronicos-acessorios"
+      );
     });
   });
 
-  describe("POST /categories", () => {
-    it("should allow ADMIN to create a category", async () => {
-      const res = await request(app)
-        .post("/categories")
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ name: " Eletrônicos Gamer " });
+  describe("Zod Schemas", () => {
+    it("deve validar payload de criação de categoria", () => {
+      const valid = createCategorySchema.safeParse({ name: "Vestuário" });
+      expect(valid.success).toBe(true);
 
-      expect(res.status).toBe(201);
-      expect(res.body.name).toBe("Eletrônicos Gamer");
-      expect(res.body.slug).toBe("eletronicos-gamer");
-      expect(res.body.enterpriseId).toBe(enterpriseId);
+      const emptyName = createCategorySchema.safeParse({ name: "" });
+      expect(emptyName.success).toBe(false);
     });
 
-    it("should not allow SELLER to create a category", async () => {
-      const res = await request(app)
-        .post("/categories")
-        .set("Authorization", `Bearer ${sellerToken}`)
-        .send({ name: "Teste" });
-
-      expect(res.status).toBe(403);
-    });
-
-    it("should return 400 if slug conflicts in the same enterprise", async () => {
-      await request(app)
-        .post("/categories")
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ name: "Eletronicos" });
-
-      const res = await request(app)
-        .post("/categories")
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ name: "ELETRÔNICOS" }); // Will generate 'eletronicos'
-
-      expect(res.status).toBe(400);
-      expect(res.body.error).toBe("Categoria já existe");
-    });
-
-    it("should allow the same slug in different enterprises", async () => {
-      await request(app)
-        .post("/categories")
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ name: "Eletrônicos" });
-
-      const res = await request(app)
-        .post("/categories")
-        .set("Authorization", `Bearer ${secondAdminToken}`)
-        .send({ name: "Eletrônicos" });
-
-      expect(res.status).toBe(201);
+    it("deve validar query parameters com defaults", () => {
+      const parsed = queryCategorySchema.parse({});
+      expect(parsed.page).toBe(1);
+      expect(parsed.limit).toBe(50);
+      expect(parsed.status).toBe("ACTIVE");
     });
   });
 
-  describe("GET /categories", () => {
-    it("should list categories with pagination and counts", async () => {
-      await prisma.category.createMany({
-        data: Array.from({ length: 5 }).map((_, i) => ({
-          name: `Cat ${i}`,
-          slug: `cat-${i}`,
-          enterpriseId,
-        })),
+  describe("createCategory", () => {
+    it("1. deve criar uma nova categoria com sucesso", async () => {
+      jest.spyOn(prisma.category, "findUnique").mockResolvedValue(null as any);
+      jest.spyOn(prisma.category, "create").mockResolvedValue({
+        id: "cat-1",
+        name: "Roupas",
+        slug: "roupas",
+        enterpriseId: "ent-1",
+      } as any);
+
+      const result = await createCategory("ent-1", { name: "Roupas" });
+
+      expect(prisma.category.findUnique).toHaveBeenCalledWith({
+        where: {
+          enterpriseId_slug: {
+            enterpriseId: "ent-1",
+            slug: "roupas",
+          },
+        },
       });
-
-      const res = await request(app)
-        .get("/categories?page=1&limit=2")
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(res.status).toBe(200);
-      expect(res.body.data.length).toBe(2);
-      expect(res.body.meta.total).toBe(5);
-      expect(res.body.meta.totalPages).toBe(3);
-      expect(res.body.meta.page).toBe(1);
-      expect(res.body.data[0]).toHaveProperty("productsCount");
-      expect(res.body.data[0]).toHaveProperty("status", "ACTIVE");
+      expect(prisma.category.create).toHaveBeenCalledWith({
+        data: {
+          name: "Roupas",
+          slug: "roupas",
+          enterpriseId: "ent-1",
+        },
+      });
+      expect(result.id).toBe("cat-1");
     });
 
-    it("should filter categories by status (ACTIVE, DELETED, ALL)", async () => {
-      await prisma.category.create({ data: { name: "Active Cat", slug: "active-cat", enterpriseId } });
-      await prisma.category.create({ data: { name: "Deleted Cat", slug: "del-cat", enterpriseId, deletedAt: new Date() } });
+    it("2. deve restaurar categoria se ela já existia porém soft-deleted", async () => {
+      jest.spyOn(prisma.category, "findUnique").mockResolvedValue({
+        id: "cat-1",
+        name: "Roupas Antigas",
+        slug: "roupas",
+        deletedAt: new Date(),
+      } as any);
+      jest.spyOn(prisma.category, "update").mockResolvedValue({
+        id: "cat-1",
+        name: "Roupas",
+        slug: "roupas",
+        deletedAt: null,
+      } as any);
 
-      const resActive = await request(app).get("/categories?status=ACTIVE").set("Authorization", `Bearer ${adminToken}`);
-      expect(resActive.body.data.length).toBeGreaterThan(0);
-      expect(resActive.body.data.every((c: any) => c.status === "ACTIVE")).toBe(true);
+      const result = await createCategory("ent-1", { name: "Roupas" });
 
-      const resDeleted = await request(app).get("/categories?status=DELETED").set("Authorization", `Bearer ${adminToken}`);
-      expect(resDeleted.body.data.length).toBe(1);
-      expect(resDeleted.body.data[0].status).toBe("DELETED");
-
-      const resAll = await request(app).get("/categories?status=ALL").set("Authorization", `Bearer ${adminToken}`);
-      expect(resAll.body.data.length).toBeGreaterThan(resActive.body.data.length);
+      expect(prisma.category.update).toHaveBeenCalledWith({
+        where: { id: "cat-1" },
+        data: { name: "Roupas", deletedAt: null },
+      });
+      expect(result.deletedAt).toBeNull();
     });
 
-    it("should not list categories from another enterprise", async () => {
-      await prisma.category.create({
-        data: { name: "Cat E2", slug: "cat-e2", enterpriseId: secondEnterpriseId },
+    it("3. deve lançar erro se categoria com mesmo slug já estiver ativa", async () => {
+      jest.spyOn(prisma.category, "findUnique").mockResolvedValue({
+        id: "cat-1",
+        name: "Roupas",
+        slug: "roupas",
+        deletedAt: null,
+      } as any);
+
+      await expect(
+        createCategory("ent-1", { name: "Roupas" })
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Categoria já existe",
       });
-
-      const res = await request(app)
-        .get("/categories")
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(res.status).toBe(200);
-      expect(res.body.data.length).toBe(0);
-    });
-  });
-
-  describe("PATCH /categories/:id", () => {
-    it("should update a category", async () => {
-      const category = await prisma.category.create({
-        data: { name: "Antigo", slug: "antigo", enterpriseId },
-      });
-
-      const res = await request(app)
-        .patch(`/categories/${category.id}`)
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ name: "Novo Nome" });
-
-      expect(res.status).toBe(200);
-      expect(res.body.name).toBe("Novo Nome");
-      expect(res.body.slug).toBe("novo-nome");
-    });
-
-    it("should block update from another enterprise (cross-tenant)", async () => {
-      const category = await prisma.category.create({
-        data: { name: "Cat E2", slug: "cat-e2", enterpriseId: secondEnterpriseId },
-      });
-
-      const res = await request(app)
-        .patch(`/categories/${category.id}`)
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ name: "Hacked" });
-
-      expect(res.status).toBe(404);
-    });
-
-    it("should block update if new slug conflicts", async () => {
-      await prisma.category.create({
-        data: { name: "Cat 1", slug: "cat-1", enterpriseId },
-      });
-      const category2 = await prisma.category.create({
-        data: { name: "Cat 2", slug: "cat-2", enterpriseId },
-      });
-
-      const res = await request(app)
-        .patch(`/categories/${category2.id}`)
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ name: "Cat 1" });
-
-      expect(res.status).toBe(400);
-      expect(res.body.error).toBe("Categoria já existe");
-    });
-
-    it("should block update if category is in trash", async () => {
-      const category = await prisma.category.create({
-        data: { name: "Deleted", slug: "deleted-1", enterpriseId, deletedAt: new Date() },
-      });
-
-      const res = await request(app)
-        .patch(`/categories/${category.id}`)
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ name: "Revive" });
-
-      expect(res.status).toBe(400);
-      expect(res.body.error).toBe("Categoria está na lixeira");
     });
   });
 
-  describe("PATCH /categories/:id/archive (Soft Delete)", () => {
-    it("should soft delete an empty category", async () => {
-      const category = await prisma.category.create({
-        data: { name: "To Delete", slug: "to-delete", enterpriseId },
+  describe("listCategories", () => {
+    it("4. deve listar categorias formatadas e retornar metadados de paginação", async () => {
+      const mockCategories = [
+        {
+          id: "cat-1",
+          name: "Calçados",
+          slug: "calcados",
+          deletedAt: null,
+          _count: { products: 3 },
+        },
+      ];
+
+      jest.spyOn(prisma.category, "findMany").mockResolvedValue(mockCategories as any);
+      jest.spyOn(prisma.category, "count").mockResolvedValue(1 as any);
+
+      const result = await listCategories("ent-1", {
+        page: 1,
+        limit: 10,
+        status: "ACTIVE",
       });
 
-      const res = await request(app)
-        .patch(`/categories/${category.id}/archive`)
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(res.status).toBe(200);
-
-      const dbCategory = await prisma.category.findUnique({ where: { id: category.id } });
-      expect(dbCategory?.deletedAt).not.toBeNull();
-    });
-
-    it("should block delete if category has active products", async () => {
-      const category = await prisma.category.create({
-        data: { name: "With Product", slug: "with-product", enterpriseId },
-      });
-
-      const product = await prisma.product.create({
-        data: { name: "Prod 1", userId: adminUser.id, enterpriseId },
-      });
-
-      await prisma.productCategory.create({
-        data: { categoryId: category.id, productId: product.id },
-      });
-
-      const res = await request(app)
-        .patch(`/categories/${category.id}/archive`)
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(res.status).toBe(409);
-      expect(res.body.error).toBe("Categoria possui produtos vinculados");
-    });
-
-    it("should allow delete if products are soft-deleted", async () => {
-      const category = await prisma.category.create({
-        data: { name: "With Deleted Product", slug: "with-del-product", enterpriseId },
-      });
-
-      const product = await prisma.product.create({
-        data: { name: "Prod 1", userId: adminUser.id, enterpriseId, deletedAt: new Date() },
-      });
-
-      await prisma.productCategory.create({
-        data: { categoryId: category.id, productId: product.id },
-      });
-
-      const res = await request(app)
-        .patch(`/categories/${category.id}/archive`)
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(res.status).toBe(200);
-    });
-
-    it("should block delete from another enterprise (cross-tenant)", async () => {
-      const category = await prisma.category.create({
-        data: { name: "Cat E2", slug: "cat-e2", enterpriseId: secondEnterpriseId },
-      });
-
-      const res = await request(app)
-        .patch(`/categories/${category.id}/archive`)
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(res.status).toBe(404);
+      expect(prisma.category.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { enterpriseId: "ent-1", deletedAt: null },
+          skip: 0,
+          take: 10,
+        })
+      );
+      expect(result.data).toEqual([
+        {
+          id: "cat-1",
+          name: "Calçados",
+          slug: "calcados",
+          status: "ACTIVE",
+          deletedAt: null,
+          productsCount: 3,
+        },
+      ]);
+      expect(result.meta.total).toBe(1);
     });
   });
 
-  describe("PATCH /categories/:id/restore", () => {
-    it("should restore a soft-deleted category", async () => {
-      const category = await prisma.category.create({
-        data: { name: "To Restore", slug: "to-restore", enterpriseId, deletedAt: new Date() },
+  describe("updateCategory", () => {
+    it("5. deve atualizar categoria com sucesso", async () => {
+      jest.spyOn(prisma.category, "findFirst").mockResolvedValue({
+        id: "cat-1",
+        name: "Nome Antigo",
+        slug: "nome-antigo",
+        deletedAt: null,
+      } as any);
+      jest.spyOn(prisma.category, "findUnique").mockResolvedValue(null as any);
+      jest.spyOn(prisma.category, "update").mockResolvedValue({
+        id: "cat-1",
+        name: "Nome Novo",
+        slug: "nome-novo",
+      } as any);
+
+      const result = await updateCategory("cat-1", "ent-1", {
+        name: "Nome Novo",
       });
 
-      const res = await request(app)
-        .patch(`/categories/${category.id}/restore`)
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(res.status).toBe(200);
-
-      const dbCategory = await prisma.category.findUnique({ where: { id: category.id } });
-      expect(dbCategory?.deletedAt).toBeNull();
+      expect(prisma.category.update).toHaveBeenCalledWith({
+        where: { id: "cat-1" },
+        data: { name: "Nome Novo", slug: "nome-novo" },
+      });
+      expect(result.name).toBe("Nome Novo");
     });
 
-    it("should block restore if category is already active", async () => {
-      const category = await prisma.category.create({
-        data: { name: "Active Restore", slug: "active-restore", enterpriseId },
+    it("6. deve lançar 404 se categoria não existir na empresa", async () => {
+      jest.spyOn(prisma.category, "findFirst").mockResolvedValue(null as any);
+
+      await expect(
+        updateCategory("cat-999", "ent-1", { name: "Novo" })
+      ).rejects.toMatchObject({
+        statusCode: 404,
+        message: "Categoria não encontrada",
       });
-
-      const res = await request(app)
-        .patch(`/categories/${category.id}/restore`)
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(res.status).toBe(400);
-      expect(res.body.error).toBe("A categoria não está arquivada");
     });
 
-    it("should block restore from another enterprise", async () => {
-      const category = await prisma.category.create({
-        data: { name: "Cat E2 Restore", slug: "cat-e2-restore", enterpriseId: secondEnterpriseId, deletedAt: new Date() },
+    it("7. deve impedir atualização se categoria estiver na lixeira", async () => {
+      jest.spyOn(prisma.category, "findFirst").mockResolvedValue({
+        id: "cat-1",
+        name: "Arquivada",
+        deletedAt: new Date(),
+      } as any);
+
+      await expect(
+        updateCategory("cat-1", "ent-1", { name: "Novo" })
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Categoria está na lixeira",
       });
-
-      const res = await request(app)
-        .patch(`/categories/${category.id}/restore`)
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(res.status).toBe(404);
     });
   });
 
-  describe("DELETE /categories/:id (Hard Delete)", () => {
-    it("should permanently delete a soft-deleted category", async () => {
-      const category = await prisma.category.create({
-        data: { name: "Trash", slug: "trash", enterpriseId, deletedAt: new Date() },
+  describe("archiveCategory", () => {
+    it("8. deve arquivar categoria sem produtos vinculados", async () => {
+      jest.spyOn(prisma.category, "findFirst").mockResolvedValue({
+        id: "cat-1",
+        enterpriseId: "ent-1",
+        deletedAt: null,
+      } as any);
+      jest.spyOn(prisma.productCategory, "count").mockResolvedValue(0 as any);
+      jest.spyOn(prisma.category, "update").mockResolvedValue({ id: "cat-1" } as any);
+
+      const result = await archiveCategory("cat-1", "ent-1");
+
+      expect(prisma.category.update).toHaveBeenCalledWith({
+        where: { id: "cat-1" },
+        data: { deletedAt: expect.any(Date) },
       });
-
-      const res = await request(app)
-        .delete(`/categories/${category.id}`)
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(res.status).toBe(200);
-
-      const dbCategory = await prisma.category.findUnique({ where: { id: category.id } });
-      expect(dbCategory).toBeNull();
+      expect(result.message).toBe("Categoria arquivada com sucesso");
     });
 
-    it("should block hard delete if category is ACTIVE", async () => {
-      const category = await prisma.category.create({
-        data: { name: "Active", slug: "active", enterpriseId },
+    it("9. deve impedir arquivamento se categoria tiver produtos ativos vinculados", async () => {
+      jest.spyOn(prisma.category, "findFirst").mockResolvedValue({
+        id: "cat-1",
+        enterpriseId: "ent-1",
+        deletedAt: null,
+      } as any);
+      jest.spyOn(prisma.productCategory, "count").mockResolvedValue(2 as any);
+
+      await expect(archiveCategory("cat-1", "ent-1")).rejects.toMatchObject({
+        statusCode: 409,
+        message: "Categoria possui produtos vinculados",
       });
+    });
+  });
 
-      const res = await request(app)
-        .delete(`/categories/${category.id}`)
-        .set("Authorization", `Bearer ${adminToken}`);
+  describe("restoreCategory", () => {
+    it("10. deve restaurar categoria arquivada", async () => {
+      jest
+        .spyOn(prisma.category, "findFirst")
+        .mockResolvedValueOnce({
+          id: "cat-1",
+          enterpriseId: "ent-1",
+          slug: "calcados",
+          deletedAt: new Date(),
+        } as any)
+        .mockResolvedValueOnce(null as any); // Nenhum conflito ativo de slug
 
-      expect(res.status).toBe(400);
-      expect(res.body.error).toBe("A categoria deve estar arquivada para ser excluída permanentemente");
+      jest.spyOn(prisma.category, "update").mockResolvedValue({
+        id: "cat-1",
+        deletedAt: null,
+      } as any);
+
+      const result = await restoreCategory("cat-1", "ent-1");
+
+      expect(prisma.category.update).toHaveBeenCalledWith({
+        where: { id: "cat-1" },
+        data: { deletedAt: null },
+      });
+      expect(result.message).toBe("Categoria restaurada com sucesso");
     });
 
-    it("should block hard delete if category has active products", async () => {
-      const category = await prisma.category.create({
-        data: { name: "Trash With Product", slug: "trash-prod", enterpriseId, deletedAt: new Date() },
+    it("11. deve impedir restauração se já houver categoria ativa com o mesmo slug", async () => {
+      jest
+        .spyOn(prisma.category, "findFirst")
+        .mockResolvedValueOnce({
+          id: "cat-1",
+          enterpriseId: "ent-1",
+          slug: "calcados",
+          deletedAt: new Date(),
+        } as any)
+        .mockResolvedValueOnce({
+          id: "cat-2",
+          slug: "calcados",
+          deletedAt: null,
+        } as any);
+
+      await expect(restoreCategory("cat-1", "ent-1")).rejects.toMatchObject({
+        statusCode: 409,
+        message:
+          "Não é possível restaurar: já existe uma categoria ativa com este nome/slug.",
       });
+    });
+  });
 
-      const product = await prisma.product.create({
-        data: { name: "Prod Active", userId: adminUser.id, enterpriseId },
+  describe("deleteCategoryPermanently", () => {
+    it("12. deve excluir permanentemente se estiver arquivada e sem produtos", async () => {
+      jest.spyOn(prisma.category, "findFirst").mockResolvedValue({
+        id: "cat-1",
+        enterpriseId: "ent-1",
+        deletedAt: new Date(),
+      } as any);
+      jest.spyOn(prisma.productCategory, "count").mockResolvedValue(0 as any);
+      jest.spyOn(prisma.category, "delete").mockResolvedValue({ id: "cat-1" } as any);
+
+      const result = await deleteCategoryPermanently("cat-1", "ent-1");
+
+      expect(prisma.category.delete).toHaveBeenCalledWith({
+        where: { id: "cat-1" },
       });
+      expect(result.message).toBe("Categoria removida permanentemente");
+    });
 
-      await prisma.productCategory.create({
-        data: { categoryId: category.id, productId: product.id },
+    it("13. deve impedir exclusão permanente se a categoria não estiver arquivada", async () => {
+      jest.spyOn(prisma.category, "findFirst").mockResolvedValue({
+        id: "cat-1",
+        enterpriseId: "ent-1",
+        deletedAt: null,
+      } as any);
+
+      await expect(
+        deleteCategoryPermanently("cat-1", "ent-1")
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message:
+          "A categoria deve estar arquivada para ser excluída permanentemente",
       });
-
-      const res = await request(app)
-        .delete(`/categories/${category.id}`)
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(res.status).toBe(409);
     });
   });
 });

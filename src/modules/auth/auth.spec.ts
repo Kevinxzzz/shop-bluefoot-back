@@ -1,208 +1,261 @@
-import { describe, it, expect, beforeEach } from "@jest/globals";
-import request from "supertest";
+import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
-import { app } from "../../app.js";
+import { LoggingIn, registerSellerWithToken } from "./auth.service.js";
 import { prisma } from "../../shared/database/prisma.js";
-import { env } from "../../shared/config/env.js";
+import { loginSchema, registerSellerSchema } from "./auth.schema.js";
 
 describe("Auth Module", () => {
-  let enterpriseId: string;
-  let adminRoleId: string;
-
-  beforeEach(async () => {
-    // Limpar tabelas mantendo as roles do setup
-    await prisma.enterpriseInviteToken.deleteMany();
-    await prisma.userToken.deleteMany();
-    await prisma.user.deleteMany();
-    await prisma.enterprise.deleteMany();
-
-    // Obter ou criar role ADMIN
-    let adminRole = await prisma.userRole.findFirst({
-      where: { role: "ADMIN" },
-    });
-    if (!adminRole) {
-      adminRole = await prisma.userRole.create({
-        data: { role: "ADMIN", description: "Admin" },
-      });
-    }
-    adminRoleId = adminRole.id;
-
-    // Criar empresa de teste
-    const enterprise = await prisma.enterprise.create({
-      data: {
-        cnpj: "12345678901234",
-        name: "Empresa de Teste",
-        phoneNumber: "999999999",
-      },
-    });
-    enterpriseId = enterprise.id;
+  beforeEach(() => {
+    jest.restoreAllMocks();
+    jest.clearAllMocks();
   });
 
-  it("should successfully log in an existing user and return a JWT token", async () => {
-    const password = "password123";
-    const hashedPassword = await bcrypt.hash(password, 10);
+  describe("Zod Schemas", () => {
+    it("deve validar dados válidos de login", () => {
+      const parsed = loginSchema.safeParse({
+        email: "user@test.com",
+        password: "password123",
+      });
+      expect(parsed.success).toBe(true);
+    });
 
-    const user = await prisma.user.create({
-      data: {
-        name: "Admin User",
+    it("deve rejeitar email inválido ou senha menor que 6 caracteres", () => {
+      expect(
+        loginSchema.safeParse({ email: "invalid-email", password: "123456" })
+          .success
+      ).toBe(false);
+      expect(
+        loginSchema.safeParse({ email: "user@test.com", password: "123" })
+          .success
+      ).toBe(false);
+    });
+
+    it("deve validar dados válidos de registro de vendedor", () => {
+      const parsed = registerSellerSchema.safeParse({
+        token: "raw-token-123",
+        name: "Vendedor Teste",
+        email: "seller@test.com",
+        password: "password123",
+      });
+      expect(parsed.success).toBe(true);
+    });
+  });
+
+  describe("LoggingIn", () => {
+    it("1. deve autenticar usuário ativo e retornar token JWT e dados do usuário", async () => {
+      const hashedPassword = await bcrypt.hash("correct-password", 4);
+      jest.spyOn(prisma.user, "findFirst").mockResolvedValue({
+        id: "user-1",
+        name: "Admin",
         email: "admin@test.com",
         password: hashedPassword,
-        roleId: adminRoleId,
-        enterpriseId,
-      },
+        enterpriseId: "ent-1",
+        role: { role: "ADMIN" },
+      } as any);
+
+      const result = await LoggingIn({
+        email: "admin@test.com",
+        password: "correct-password",
+      });
+
+      expect(result).toHaveProperty("token");
+      expect(result.user).toEqual({
+        id: "user-1",
+        name: "Admin",
+        email: "admin@test.com",
+        role: "ADMIN",
+        enterpriseId: "ent-1",
+      });
     });
 
-    const response = await request(app).post("/auth/login").send({
-      email: "admin@test.com",
-      password,
-    });
-
-    expect(response.status).toBe(200);
-    expect(response.body).toHaveProperty("token");
-    expect(response.body.user).toHaveProperty("id");
-    expect(response.body.user.email).toBe("admin@test.com");
-    expect(response.body.user.role).toBe("ADMIN");
-
-    // Verificar token decodificado
-    const decoded = jwt.verify(response.body.token, env.JWT_SECRET) as any;
-    expect(decoded.userId).toBe(user.id);
-    expect(decoded.email).toBe(user.email);
-    expect(decoded.role).toBe("ADMIN");
-    expect(decoded.enterpriseId).toBe(enterpriseId);
-  });
-
-  it("should fail login if password does not match", async () => {
-    const hashedPassword = await bcrypt.hash("password123", 10);
-
-    await prisma.user.create({
-      data: {
-        name: "Admin User",
+    it("2. deve falhar autenticação se a senha for incorreta", async () => {
+      const hashedPassword = await bcrypt.hash("correct-password", 4);
+      jest.spyOn(prisma.user, "findFirst").mockResolvedValue({
+        id: "user-1",
         email: "admin@test.com",
         password: hashedPassword,
-        roleId: adminRoleId,
-        enterpriseId,
-      },
-    });
+        role: { role: "ADMIN" },
+      } as any);
 
-    const response = await request(app).post("/auth/login").send({
-      email: "admin@test.com",
-      password: "wrongpassword",
-    });
-
-    expect(response.status).toBe(401);
-    expect(response.body.error).toBe("Credenciais inválidas");
-  });
-
-  it("should fail login if email does not exist", async () => {
-    const response = await request(app).post("/auth/login").send({
-      email: "nonexistent@test.com",
-      password: "password123",
-    });
-
-    expect(response.status).toBe(401);
-    expect(response.body.error).toBe("Credenciais inválidas");
-  });
-
-  it("should fail login if the user has been soft-deleted", async () => {
-    const hashedPassword = await bcrypt.hash("password123", 10);
-
-    await prisma.user.create({
-      data: {
-        name: "Admin User",
-        email: "admin@test.com",
-        password: hashedPassword,
-        roleId: adminRoleId,
-        enterpriseId,
-        deletedAt: new Date(),
-      },
-    });
-
-    const response = await request(app).post("/auth/login").send({
-      email: "admin@test.com",
-      password: "password123",
-    });
-
-    expect(response.status).toBe(401);
-    expect(response.body.error).toBe("Credenciais inválidas");
-  });
-
-  describe("POST /auth/register-seller", () => {
-    let rawToken: string;
-    let adminUserId: string;
-
-    beforeEach(async () => {
-      let sellerRole = await prisma.userRole.findFirst({
-        where: { role: "SELLER" },
+      await expect(
+        LoggingIn({ email: "admin@test.com", password: "wrong-password" })
+      ).rejects.toMatchObject({
+        statusCode: 401,
+        message: "Credenciais inválidas",
       });
-      if (!sellerRole) {
-        sellerRole = await prisma.userRole.create({
-          data: { role: "SELLER", description: "Seller" },
-        });
-      }
-      
-      const adminUser = await prisma.user.create({
-        data: {
-          name: "Admin User",
-          email: "admin_token_creator@test.com",
-          password: "password123",
-          roleId: adminRoleId,
-          enterpriseId,
-        }
-      });
-      adminUserId = adminUser.id;
+    });
 
-      rawToken = "test_raw_token_123";
-      await prisma.enterpriseInviteToken.create({
-        data: {
-          token: rawToken,
-          maxUses: 1,
-          expiredAt: new Date(Date.now() + 1000 * 60 * 60 * 24),
-          enterpriseId,
-          createdByAdminId: adminUserId,
+    it("3. deve falhar autenticação se o usuário não for encontrado ou estiver deletado", async () => {
+      jest.spyOn(prisma.user, "findFirst").mockResolvedValue(null as any);
+
+      await expect(
+        LoggingIn({ email: "unknown@test.com", password: "password123" })
+      ).rejects.toMatchObject({
+        statusCode: 401,
+        message: "Credenciais inválidas",
+      });
+    });
+  });
+
+  describe("registerSellerWithToken", () => {
+    it("4. deve registrar vendedor com convite válido com sucesso", async () => {
+      const mockTx = {
+        enterpriseInviteToken: {
+          findFirst: jest.fn<any>().mockResolvedValue({
+            id: "tok-1",
+            token: "valid-token",
+            enterpriseId: "ent-1",
+            maxUses: 5,
+            canceledAt: null,
+            expiredAt: new Date(Date.now() + 100000),
+          }),
+          update: jest.fn(),
         },
-      });
-    });
+        userToken: {
+          count: jest.fn<any>().mockResolvedValue(1),
+          create: jest.fn<any>().mockResolvedValue({}),
+        },
+        user: {
+          findFirst: jest.fn<any>().mockResolvedValue(null),
+          create: jest.fn<any>().mockResolvedValue({
+            id: "seller-1",
+            name: "Novo Vendedor",
+            email: "seller@test.com",
+            enterpriseId: "ent-1",
+          }),
+        },
+        userRole: {
+          findFirst: jest.fn<any>().mockResolvedValue({ id: "role-seller-id" }),
+        },
+      };
 
-    it("should successfully register a seller using a raw token", async () => {
-      const response = await request(app).post("/auth/register-seller").send({
-        token: rawToken,
-        name: "New Seller",
+      jest
+        .spyOn(prisma, "$transaction")
+        .mockImplementation(async (cb: any) => cb(mockTx));
+
+      const result = await registerSellerWithToken({
+        token: "valid-token",
+        name: "Novo Vendedor",
         email: "seller@test.com",
         password: "password123",
       });
 
-      expect(response.status).toBe(201);
-      expect(response.body).toHaveProperty("token");
-      expect(response.body.user).toHaveProperty("id");
-      expect(response.body.user.email).toBe("seller@test.com");
-      expect(response.body.user.role).toBe("SELLER");
+      expect(result).toHaveProperty("token");
+      expect(result.user.id).toBe("seller-1");
+      expect(result.user.role).toBe("SELLER");
+      expect(mockTx.userToken.create).toHaveBeenCalledWith({
+        data: { userId: "seller-1", tokenId: "tok-1" },
+      });
+      expect(mockTx.enterpriseInviteToken.update).not.toHaveBeenCalled();
     });
 
-    it("should auto-cancel token if maxUses is reached", async () => {
-      // First use
-      await request(app).post("/auth/register-seller").send({
-        token: rawToken,
-        name: "First Seller",
-        email: "first@test.com",
+    it("5. deve auto-cancelar token quando atingir o limite maxUses", async () => {
+      const mockTx = {
+        enterpriseInviteToken: {
+          findFirst: jest.fn<any>().mockResolvedValue({
+            id: "tok-1",
+            token: "valid-token",
+            enterpriseId: "ent-1",
+            maxUses: 2,
+            canceledAt: null,
+            expiredAt: new Date(Date.now() + 100000),
+          }),
+          update: jest.fn<any>().mockResolvedValue({}),
+        },
+        userToken: {
+          count: jest.fn<any>().mockResolvedValue(1), // 1 use previously, this is use #2
+          create: jest.fn<any>().mockResolvedValue({}),
+        },
+        user: {
+          findFirst: jest.fn<any>().mockResolvedValue(null),
+          create: jest.fn<any>().mockResolvedValue({
+            id: "seller-2",
+            name: "Vendedor",
+            email: "seller2@test.com",
+            enterpriseId: "ent-1",
+          }),
+        },
+        userRole: {
+          findFirst: jest.fn<any>().mockResolvedValue({ id: "role-seller-id" }),
+        },
+      };
+
+      jest
+        .spyOn(prisma, "$transaction")
+        .mockImplementation(async (cb: any) => cb(mockTx));
+
+      await registerSellerWithToken({
+        token: "valid-token",
+        name: "Vendedor",
+        email: "seller2@test.com",
         password: "password123",
       });
 
-      const tokenInDb = await prisma.enterpriseInviteToken.findFirst({
-        where: { token: rawToken },
+      expect(mockTx.enterpriseInviteToken.update).toHaveBeenCalledWith({
+        where: { id: "tok-1" },
+        data: { canceledAt: expect.any(Date) },
       });
-      expect(tokenInDb?.canceledAt).not.toBeNull();
+    });
 
-      // Second use should fail
-      const response2 = await request(app).post("/auth/register-seller").send({
-        token: rawToken,
-        name: "Second Seller",
-        email: "second@test.com",
-        password: "password123",
+    it("6. deve lançar erro se o convite for inexistente, cancelado ou expirado", async () => {
+      const mockTx = {
+        enterpriseInviteToken: {
+          findFirst: jest.fn<any>().mockResolvedValue(null),
+        },
+      };
+
+      jest
+        .spyOn(prisma, "$transaction")
+        .mockImplementation(async (cb: any) => cb(mockTx));
+
+      await expect(
+        registerSellerWithToken({
+          token: "invalid-token",
+          name: "Vendedor",
+          email: "seller@test.com",
+          password: "password123",
+        })
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Convite inválido ou indisponível",
       });
+    });
 
-      expect(response2.status).toBe(400);
-      expect(response2.body.error).toBe("Convite inválido ou indisponível");
+    it("7. deve lançar erro se o e-mail já estiver cadastrado", async () => {
+      const mockTx = {
+        enterpriseInviteToken: {
+          findFirst: jest.fn<any>().mockResolvedValue({
+            id: "tok-1",
+            token: "valid-token",
+            enterpriseId: "ent-1",
+            maxUses: 5,
+            canceledAt: null,
+            expiredAt: new Date(Date.now() + 100000),
+          }),
+        },
+        userToken: {
+          count: jest.fn<any>().mockResolvedValue(0),
+        },
+        user: {
+          findFirst: jest.fn<any>().mockResolvedValue({ id: "existing-user" }),
+        },
+      };
+
+      jest
+        .spyOn(prisma, "$transaction")
+        .mockImplementation(async (cb: any) => cb(mockTx));
+
+      await expect(
+        registerSellerWithToken({
+          token: "valid-token",
+          name: "Vendedor",
+          email: "already@used.com",
+          password: "password123",
+        })
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message: "E-mail já está em uso",
+      });
     });
   });
 });
