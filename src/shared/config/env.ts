@@ -27,6 +27,11 @@ const envSchema = z.object({
   AWS_SECRECT_ACCESS_KEY: z.string(),
   AWS_REGION: z.string(),
   AWS_BUCKET_NAME: z.string(),
+  R2_BUCKET_NAME: z.string(),
+  R2_ACCOUNT_ID: z.string(),
+  R2_ACCESS_KEY: z.string(),
+  R2_SECRET_ACCESS_KEY: z.string(),
+  MEDIA_CDN_URL: z.string().url(),
   PUBLIC_ENTERPRISE_ID: z.string().optional(),
   ID_ENTERPRISE_MARTINS: z.string(),
 });
@@ -59,6 +64,11 @@ export const env = {
   AWS_SECRET_ACCESS_KEY: parsedEnv.AWS_SECRECT_ACCESS_KEY,
   AWS_REGION: parsedEnv.AWS_REGION,
   AWS_BUCKET_NAME: parsedEnv.AWS_BUCKET_NAME,
+  R2_BUCKET_NAME: parsedEnv.R2_BUCKET_NAME,
+  R2_ACCOUNT_ID: parsedEnv.R2_ACCOUNT_ID,
+  R2_ACCESS_KEY: parsedEnv.R2_ACCESS_KEY,
+  R2_SECRET_ACCESS_KEY: parsedEnv.R2_SECRET_ACCESS_KEY,
+  MEDIA_CDN_URL: parsedEnv.MEDIA_CDN_URL,
   PUBLIC_ENTERPRISE_ID: parsedEnv.PUBLIC_ENTERPRISE_ID,
   ID_ENTERPRISE_MARTINS: parsedEnv.ID_ENTERPRISE_MARTINS,
 };

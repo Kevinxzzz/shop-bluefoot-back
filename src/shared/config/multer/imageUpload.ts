@@ -9,7 +9,7 @@ const allowedMimes = ["image/jpeg", "image/png", "image/webp"];
 export const imageUpload = multer({
   storage: multerS3({
     s3,
-    bucket: env.AWS_BUCKET_NAME!,
+    bucket: env.R2_BUCKET_NAME,
     contentType: multerS3.AUTO_CONTENT_TYPE,
 
     key: (req, file, cb) => {

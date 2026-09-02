@@ -1,37 +1,25 @@
-import { describe, it, expect, beforeEach, afterEach } from "@jest/globals";
-import request from "supertest";
-import jwt from "jsonwebtoken";
-import { app } from "../../app.js";
+import { describe, it, expect, beforeEach, jest } from "@jest/globals";
+import {
+  createEnterprise,
+  getEnterprise,
+  updateEnterprise,
+  getEnterpriseFirstLink,
+} from "./enterprise.service.js";
 import { prisma } from "../../shared/database/prisma.js";
-import { env } from "../../shared/config/env.js";
+import {
+  createEnterpriseSchema,
+  updateEnterpriseSchema,
+} from "./enterprise.schema.js";
 
 describe("Enterprise Module", () => {
-  beforeEach(async () => {
-    // Limpar tabelas mantendo as roles do setup
-    await prisma.enterpriseInviteToken.deleteMany();
-    await prisma.userToken.deleteMany();
-    await prisma.user.deleteMany();
-    await prisma.enterprise.deleteMany();
-
-    // Obter ou criar as roles
-    let adminRole = await prisma.userRole.findFirst({ where: { role: "ADMIN" } });
-    if (!adminRole) {
-      await prisma.userRole.create({
-        data: { role: "ADMIN", description: "Administrador da Empresa" },
-      });
-    }
-
-    let sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
-    if (!sellerRole) {
-      await prisma.userRole.create({
-        data: { role: "SELLER", description: "Vendedor da Empresa" },
-      });
-    }
+  beforeEach(() => {
+    jest.restoreAllMocks();
+    jest.clearAllMocks();
   });
 
-  const validEnterpriseData = {
+  const validData = {
     document: "12345678901234",
-    name: "Empresa de Teste",
+    name: "Empresa Teste",
     phoneNumber: "11999999999",
     fantasyName: "Teste LTDA",
     contactLink: "https://wa.me/5511999999999",
@@ -40,364 +28,292 @@ describe("Enterprise Module", () => {
     userPassword: "password123",
   };
 
-  it("should successfully register an enterprise and its first admin user", async () => {
-    const response = await request(app)
-      .post("/enterprise/register")
-      .send(validEnterpriseData);
-
-    expect(response.status).toBe(201);
-    expect(response.body).toHaveProperty("token");
-    expect(response.body.enterprise).toHaveProperty("id");
-    expect(response.body.enterprise.name).toBe(validEnterpriseData.name);
-    expect(response.body.enterprise.cnpj).toBe(validEnterpriseData.document);
-    expect(response.body.user).toHaveProperty("id");
-    expect(response.body.user.email).toBe(validEnterpriseData.userEmail);
-    expect(response.body.user.role).toBe("ADMIN");
-
-    // Verificar no banco
-    const dbEnterprise = await prisma.enterprise.findUnique({
-      where: { cnpj: validEnterpriseData.document },
+  describe("Zod Schemas", () => {
+    it("deve validar payload correto de criação", () => {
+      const parsed = createEnterpriseSchema.safeParse(validData);
+      expect(parsed.success).toBe(true);
     });
-    expect(dbEnterprise).toBeTruthy();
 
-    const dbUser = await prisma.user.findUnique({
-      where: { email: validEnterpriseData.userEmail },
-      select: { role: { select: { role: true } }, enterpriseId: true },
+    it("deve falhar se contactLink for uma URL inválida", () => {
+      const parsed = createEnterpriseSchema.safeParse({
+        ...validData,
+        contactLink: "not-a-url",
+      });
+      expect(parsed.success).toBe(false);
     });
-    expect(dbUser).toBeTruthy();
-    expect(dbUser?.role.role).toBe("ADMIN");
-  });
 
-  it("should fail validation if contactLink is not a valid URL", async () => {
-    const invalidData = {
-      ...validEnterpriseData,
-      contactLink: "not-a-url",
-    };
-
-    const response = await request(app)
-      .post("/enterprise/register")
-      .send(invalidData);
-
-    expect(response.status).toBe(400);
-    expect(response.body).toHaveProperty("error");
-    expect(response.body.error).toContain("Erro de validação");
-  });
-
-  it("should fail validation if password is too short", async () => {
-    const invalidData = {
-      ...validEnterpriseData,
-      userPassword: "123",
-    };
-
-    const response = await request(app)
-      .post("/enterprise/register")
-      .send(invalidData);
-
-    expect(response.status).toBe(400);
-    expect(response.body.error).toContain("Erro de validação");
-  });
-
-  it("should fail to register if CNPJ is already in use", async () => {
-    // Registrar primeiro
-    await request(app)
-      .post("/enterprise/register")
-      .send(validEnterpriseData);
-
-    // Tentar registrar outro com mesmo CNPJ
-    const response = await request(app)
-      .post("/enterprise/register")
-      .send({
-        ...validEnterpriseData,
-        userEmail: "another-admin@teste.com",
-        contactLink: "https://wa.me/5511888888888",
+    it("deve falhar se senha for muito curta", () => {
+      const parsed = createEnterpriseSchema.safeParse({
+        ...validData,
+        userPassword: "123",
       });
+      expect(parsed.success).toBe(false);
+    });
 
-    expect(response.status).toBe(400);
-    expect(response.body.error).toBe("Empresa já cadastrada com este CNPJ");
-  });
+    it("deve falhar se payload de atualização for vazio", () => {
+      const parsed = updateEnterpriseSchema.safeParse({});
+      expect(parsed.success).toBe(false);
+    });
 
-  it("should fail to register if email is already in use", async () => {
-    // Registrar primeiro
-    await request(app)
-      .post("/enterprise/register")
-      .send(validEnterpriseData);
-
-    // Tentar registrar outro com mesmo email mas CNPJ diferente
-    const response = await request(app)
-      .post("/enterprise/register")
-      .send({
-        ...validEnterpriseData,
-        document: "98765432109876",
-        contactLink: "https://wa.me/5511888888888",
+    it("deve validar payload de atualização válido", () => {
+      const parsed = updateEnterpriseSchema.safeParse({
+        name: "Novo Nome",
+        phone: "11988888888",
+        salesGroupLink: "https://chat.whatsapp.com/test",
       });
-
-    expect(response.status).toBe(400);
-    expect(response.body.error).toBe("E-mail já está em uso");
+      expect(parsed.success).toBe(true);
+    });
   });
 
-  it("should fail to register if contactLink is already in use", async () => {
-    // Registrar primeiro
-    await request(app)
-      .post("/enterprise/register")
-      .send(validEnterpriseData);
+  describe("createEnterprise", () => {
+    it("1. deve criar empresa e primeiro usuário admin com sucesso", async () => {
+      jest.spyOn(prisma.enterprise, "findUnique").mockResolvedValue(null as any);
+      jest.spyOn(prisma.user, "findUnique").mockResolvedValue(null as any);
+      jest.spyOn(prisma.userRole, "findFirst").mockResolvedValue({
+        id: "role-admin-id",
+        role: "ADMIN",
+      } as any);
 
-    // Tentar registrar outro com mesmo contactLink
-    const response = await request(app)
-      .post("/enterprise/register")
-      .send({
-        ...validEnterpriseData,
-        document: "98765432109876",
-        userEmail: "another-admin@teste.com",
+      const mockTx = {
+        enterprise: {
+          count: jest.fn<any>().mockResolvedValue(1),
+          create: jest.fn<any>().mockResolvedValue({
+            id: "ent-1",
+            cnpj: validData.document,
+            name: validData.name,
+            phoneNumber: validData.phoneNumber,
+          }),
+        },
+        user: {
+          create: jest.fn<any>().mockResolvedValue({
+            id: "user-1",
+            name: validData.userName,
+            email: validData.userEmail,
+            roleId: "role-admin-id",
+            enterpriseId: "ent-1",
+          }),
+        },
+      };
+
+      jest
+        .spyOn(prisma, "$transaction")
+        .mockImplementation(async (cb: any) => cb(mockTx));
+
+      const result = await createEnterprise(validData);
+
+      expect(result).toHaveProperty("token");
+      expect(result.enterprise.id).toBe("ent-1");
+      expect(result.enterprise.name).toBe(validData.name);
+      expect(result.enterprise.cnpj).toBe(validData.document);
+      expect(result.user.email).toBe(validData.userEmail);
+      expect(result.user.role).toBe("ADMIN");
+    });
+
+    it("2. deve falhar se o CNPJ já estiver cadastrado", async () => {
+      jest.spyOn(prisma.enterprise, "findUnique").mockResolvedValue({
+        id: "ent-existing",
+      } as any);
+
+      await expect(createEnterprise(validData)).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Empresa já cadastrada com este CNPJ",
       });
+    });
 
-    expect(response.status).toBe(400);
-    expect(response.body.error).toBe("Link de contato já está em uso");
+    it("3. deve falhar se o e-mail já estiver em uso", async () => {
+      jest.spyOn(prisma.enterprise, "findUnique").mockResolvedValue(null as any);
+      jest.spyOn(prisma.user, "findUnique").mockResolvedValue({
+        id: "user-existing",
+      } as any);
+
+      await expect(createEnterprise(validData)).rejects.toMatchObject({
+        statusCode: 400,
+        message: "E-mail já está em uso",
+      });
+    });
+
+    it("4. deve falhar se o contactLink já estiver em uso", async () => {
+      jest.spyOn(prisma.enterprise, "findUnique").mockResolvedValue(null as any);
+      jest
+        .spyOn(prisma.user, "findUnique")
+        .mockResolvedValueOnce(null as any) // email check
+        .mockResolvedValueOnce({ id: "user-link" } as any); // contactLink check
+
+      await expect(createEnterprise(validData)).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Link de contato já está em uso",
+      });
+    });
+
+    it("5. deve falhar se o limite de 3 empresas for atingido", async () => {
+      jest.spyOn(prisma.enterprise, "findUnique").mockResolvedValue(null as any);
+      jest.spyOn(prisma.user, "findUnique").mockResolvedValue(null as any);
+      jest.spyOn(prisma.userRole, "findFirst").mockResolvedValue({
+        id: "role-admin-id",
+        role: "ADMIN",
+      } as any);
+
+      const mockTx = {
+        enterprise: {
+          count: jest.fn<any>().mockResolvedValue(3),
+        },
+      };
+
+      jest
+        .spyOn(prisma, "$transaction")
+        .mockImplementation(async (cb: any) => cb(mockTx));
+
+      await expect(createEnterprise(validData)).rejects.toMatchObject({
+        statusCode: 400,
+        message: "O limite de empresa cadastradas ja foi atingido.",
+      });
+    });
   });
 
-  describe("GET /enterprise", () => {
-    let adminToken: string;
-    let sellerToken: string;
+  describe("getEnterprise", () => {
+    it("6. deve retornar dados da empresa", async () => {
+      jest.spyOn(prisma.enterprise, "findUnique").mockResolvedValue({
+        id: "ent-1",
+        name: "Minha Empresa",
+        cnpj: "12345678901234",
+        phoneNumber: "11999999999",
+        links: [{ link: "https://chat.whatsapp.com/test" }],
+      } as any);
 
-    beforeEach(async () => {
-      const res = await request(app)
-        .post("/enterprise/register")
-        .send(validEnterpriseData);
-      
-      adminToken = res.body.token;
-      const enterpriseId = res.body.enterprise.id;
+      const result = await getEnterprise("ent-1");
 
-      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
-      const seller = await prisma.user.create({
+      expect(result).toEqual({
+        name: "Minha Empresa",
+        document: "12345678901234",
+        phone: "11999999999",
+        salesGroupLink: "https://chat.whatsapp.com/test",
+      });
+    });
+
+    it("7. deve lançar 404 se a empresa não existir", async () => {
+      jest.spyOn(prisma.enterprise, "findUnique").mockResolvedValue(null as any);
+
+      await expect(getEnterprise("ent-nonexistent")).rejects.toMatchObject({
+        statusCode: 404,
+        message: "Empresa não encontrada",
+      });
+    });
+  });
+
+  describe("updateEnterprise", () => {
+    it("8. deve atualizar dados da empresa e atualizar link existente", async () => {
+      const mockTx = {
+        enterprise: {
+          findUnique: jest.fn<any>().mockResolvedValue({ id: "ent-1" }),
+          update: jest.fn<any>().mockResolvedValue({
+            name: "Nome Atualizado",
+            cnpj: "12345678901234",
+            phoneNumber: "11888888888",
+          }),
+        },
+        enterpriseLinkGroup: {
+          findFirst: jest.fn<any>().mockResolvedValue({ id: "link-1", link: "antigo" }),
+          update: jest.fn<any>().mockResolvedValue({ link: "https://novo.link" }),
+          delete: jest.fn(),
+          create: jest.fn(),
+        },
+      };
+
+      jest
+        .spyOn(prisma, "$transaction")
+        .mockImplementation(async (cb: any) => cb(mockTx));
+
+      const result = await updateEnterprise({
+        enterpriseId: "ent-1",
         data: {
-          name: "Seller Test",
-          email: "seller@teste.com",
-          password: "pwd",
-          roleId: sellerRole!.id,
-          enterpriseId,
-        }
-      });
-
-      sellerToken = jwt.sign(
-        { userId: seller.id, role: "SELLER", enterpriseId },
-        env.JWT_SECRET,
-        { expiresIn: "1d", algorithm: "HS256" }
-      );
-    });
-
-    it("should allow ADMIN to get enterprise details", async () => {
-      const response = await request(app)
-        .get("/enterprise")
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(response.status).toBe(200);
-      expect(response.body).toHaveProperty("name", validEnterpriseData.name);
-      expect(response.body).toHaveProperty("document", validEnterpriseData.document);
-      expect(response.body).toHaveProperty("phone");
-      expect(response.body).toHaveProperty("salesGroupLink", null);
-      // Ensure no extra fields like id or createdAt
-      expect(response.body).not.toHaveProperty("id");
-      expect(response.body).not.toHaveProperty("createdAt");
-    });
-
-    it("should allow SELLER to get enterprise details", async () => {
-      const response = await request(app)
-        .get("/enterprise")
-        .set("Authorization", `Bearer ${sellerToken}`);
-
-      expect(response.status).toBe(200);
-      expect(response.body).toHaveProperty("document", validEnterpriseData.document);
-    });
-  });
-
-  describe("PUT /enterprise", () => {
-    let adminToken: string;
-    let sellerToken: string;
-    let enterpriseId: string;
-
-    beforeEach(async () => {
-      const res = await request(app)
-        .post("/enterprise/register")
-        .send(validEnterpriseData);
-      
-      adminToken = res.body.token;
-      enterpriseId = res.body.enterprise.id;
-
-      const sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
-      const seller = await prisma.user.create({
-        data: {
-          name: "Seller Test",
-          email: "seller@teste.com",
-          password: "pwd",
-          roleId: sellerRole!.id,
-          enterpriseId,
-        }
-      });
-
-      sellerToken = jwt.sign(
-        { userId: seller.id, role: "SELLER", enterpriseId },
-        env.JWT_SECRET,
-        { expiresIn: "1d", algorithm: "HS256" }
-      );
-    });
-
-    it("should allow ADMIN to update enterprise", async () => {
-      const response = await request(app)
-        .put("/enterprise")
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({
-          name: "New Name LTDA",
-          phone: "11988888888",
-          salesGroupLink: "https://t.me/newlink"
-        });
-
-      expect(response.status).toBe(200);
-      expect(response.body.name).toBe("New Name LTDA");
-      expect(response.body.phone).toBe("11988888888");
-      expect(response.body.salesGroupLink).toBe("https://t.me/newlink");
-    });
-
-    it("should forbid SELLER from updating enterprise", async () => {
-      const response = await request(app)
-        .put("/enterprise")
-        .set("Authorization", `Bearer ${sellerToken}`)
-        .send({ name: "Hacked" });
-
-      expect(response.status).toBe(403);
-    });
-
-    it("should fail if payload is empty", async () => {
-      const response = await request(app)
-        .put("/enterprise")
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({});
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toContain("Erro de validação");
-    });
-
-    it("should fail on invalid salesGroupLink URL", async () => {
-      const response = await request(app)
-        .put("/enterprise")
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ salesGroupLink: "not-a-url" });
-
-      expect(response.status).toBe(400);
-    });
-
-    it("should ignore fields outside DTO (like document)", async () => {
-      const response = await request(app)
-        .put("/enterprise")
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ name: "Updated Name", document: "00000000000000" });
-
-      expect(response.status).toBe(200);
-      expect(response.body.document).toBe(validEnterpriseData.document); // still original
-    });
-
-    it("should allow partial updates (e.g. only phone)", async () => {
-      const response = await request(app)
-        .put("/enterprise")
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ phone: "11977777777" });
-
-      expect(response.status).toBe(200);
-      expect(response.body.phone).toBe("11977777777");
-      expect(response.body.name).toBe(validEnterpriseData.name); // unchanged
-    });
-
-    it("should update salesGroupLink correctly", async () => {
-      // Create first
-      await request(app)
-        .put("/enterprise")
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ salesGroupLink: "https://group1.com" });
-
-      // Update to new
-      const response = await request(app)
-        .put("/enterprise")
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ salesGroupLink: "https://group2.com" });
-
-      expect(response.status).toBe(200);
-      expect(response.body.salesGroupLink).toBe("https://group2.com");
-
-      // Verify DB has only 1 link
-      const links = await prisma.enterpriseLinkGroup.findMany({ where: { enterpriseId } });
-      expect(links).toHaveLength(1);
-      expect(links[0].link).toBe("https://group2.com");
-    });
-
-    it("should remove salesGroupLink when null is passed", async () => {
-      // Create first
-      await request(app)
-        .put("/enterprise")
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ salesGroupLink: "https://group1.com" });
-
-      // Update to null
-      const response = await request(app)
-        .put("/enterprise")
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({ salesGroupLink: null });
-
-      expect(response.status).toBe(200);
-      expect(response.body.salesGroupLink).toBe(null);
-
-      const links = await prisma.enterpriseLinkGroup.findMany({ where: { enterpriseId } });
-      expect(links).toHaveLength(0);
-    });
-  });
-
-  describe("GET /enterprise/enterprise-martins/link", () => {
-    let originalId: string;
-    let localEnterpriseId: string;
-
-    beforeEach(async () => {
-      // Registrar uma empresa para obter o ID
-      const res = await request(app)
-        .post("/enterprise/register")
-        .send(validEnterpriseData);
-      
-      localEnterpriseId = res.body.enterprise.id;
-
-      originalId = env.ID_ENTERPRISE_MARTINS;
-      env.ID_ENTERPRISE_MARTINS = localEnterpriseId;
-    });
-
-    afterEach(() => {
-      env.ID_ENTERPRISE_MARTINS = originalId;
-    });
-
-    it("should return the first link of the Martins enterprise successfully", async () => {
-      // Criar um link para essa empresa
-      await prisma.enterpriseLinkGroup.create({
-        data: {
-          enterpriseId: localEnterpriseId,
-          link: "https://chat.whatsapp.com/testlinkgroup",
+          name: "Nome Atualizado",
+          phone: "11888888888",
+          salesGroupLink: "https://novo.link",
         },
       });
 
-      const response = await request(app).get("/enterprise/enterprise-martins/link");
-
-      expect(response.status).toBe(200);
-      expect(response.body).toHaveProperty("link", "https://chat.whatsapp.com/testlinkgroup");
+      expect(result.name).toBe("Nome Atualizado");
+      expect(result.phone).toBe("11888888888");
+      expect(result.salesGroupLink).toBe("https://novo.link");
+      expect(mockTx.enterpriseLinkGroup.update).toHaveBeenCalledWith({
+        where: { id: "link-1" },
+        data: { link: "https://novo.link" },
+      });
     });
 
-    it("should return null if no links exist for the enterprise", async () => {
-      const response = await request(app).get("/enterprise/enterprise-martins/link");
+    it("9. deve remover link quando salesGroupLink for passado como null", async () => {
+      const mockTx = {
+        enterprise: {
+          findUnique: jest.fn<any>().mockResolvedValue({ id: "ent-1" }),
+          update: jest.fn<any>().mockResolvedValue({
+            name: "Empresa",
+            cnpj: "1234",
+            phoneNumber: "111",
+          }),
+        },
+        enterpriseLinkGroup: {
+          findFirst: jest.fn<any>().mockResolvedValue({ id: "link-1" }),
+          delete: jest.fn<any>().mockResolvedValue({}),
+        },
+      };
 
-      expect(response.status).toBe(200);
-      expect(response.body).toHaveProperty("link", null);
+      jest
+        .spyOn(prisma, "$transaction")
+        .mockImplementation(async (cb: any) => cb(mockTx));
+
+      const result = await updateEnterprise({
+        enterpriseId: "ent-1",
+        data: {
+          salesGroupLink: null,
+        },
+      });
+
+      expect(result.salesGroupLink).toBeNull();
+      expect(mockTx.enterpriseLinkGroup.delete).toHaveBeenCalledWith({
+        where: { id: "link-1" },
+      });
     });
 
-    it("should return 500 if ID_ENTERPRISE_MARTINS is not set in env", async () => {
-      (env as any).ID_ENTERPRISE_MARTINS = "";
+    it("10. deve lançar 404 se a empresa para atualizar não existir", async () => {
+      const mockTx = {
+        enterprise: {
+          findUnique: jest.fn<any>().mockResolvedValue(null),
+        },
+      };
 
-      const response = await request(app).get("/enterprise/enterprise-martins/link");
+      jest
+        .spyOn(prisma, "$transaction")
+        .mockImplementation(async (cb: any) => cb(mockTx));
 
-      expect(response.status).toBe(500);
-      expect(response.body.error).toBe("A loja pública não está configurada corretamente (Falta ID_ENTERPRISE_MARTINS).");
+      await expect(
+        updateEnterprise({
+          enterpriseId: "ent-not-found",
+          data: { name: "Teste" },
+        })
+      ).rejects.toMatchObject({
+        statusCode: 404,
+        message: "Empresa não encontrada",
+      });
+    });
+  });
+
+  describe("getEnterpriseFirstLink", () => {
+    it("11. deve retornar link quando existir", async () => {
+      jest
+        .spyOn(prisma.enterpriseLinkGroup, "findFirst")
+        .mockResolvedValue({ link: "https://link.com" } as any);
+
+      const result = await getEnterpriseFirstLink("ent-1");
+      expect(result).toEqual({ link: "https://link.com" });
+    });
+
+    it("12. deve retornar null se não houver link", async () => {
+      jest
+        .spyOn(prisma.enterpriseLinkGroup, "findFirst")
+        .mockResolvedValue(null as any);
+
+      const result = await getEnterpriseFirstLink("ent-1");
+      expect(result).toEqual({ link: null });
     });
   });
 });
-

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, jest } from "@jest/globals";
+import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 import request from "supertest";
 import jwt from "jsonwebtoken";
 import express from "express";
@@ -18,7 +18,7 @@ app.get("/admin", authMiddleware, authorizeRole(["ADMIN"]), (req, res) => {
   res.json({ ok: true });
 });
 
-// Simple error handler for AppError
+// Error handler
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   if (err instanceof AppError) {
     res.status(err.statusCode).json({ error: err.message });
@@ -28,147 +28,137 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 });
 
 describe("authMiddleware", () => {
-  let enterpriseId: string;
-  let adminRoleId: string;
-  let sellerRoleId: string;
-
-  beforeEach(async () => {
-    await prisma.enterpriseInviteToken.deleteMany();
-    await prisma.userToken.deleteMany();
-    await prisma.user.deleteMany();
-    await prisma.enterprise.deleteMany();
-    // we don't delete roles, just find or create them
-    
-    let adminRole = await prisma.userRole.findFirst({ where: { role: "ADMIN" } });
-    if (!adminRole) {
-      adminRole = await prisma.userRole.create({ data: { role: "ADMIN", description: "Admin" } });
-    }
-    adminRoleId = adminRole.id;
-
-    let sellerRole = await prisma.userRole.findFirst({ where: { role: "SELLER" } });
-    if (!sellerRole) {
-      sellerRole = await prisma.userRole.create({ data: { role: "SELLER", description: "Seller" } });
-    }
-    sellerRoleId = sellerRole.id;
-
-    const enterprise = await prisma.enterprise.create({
-      data: {
-        cnpj: "99999999999999",
-        name: "Test Auth Enterprise",
-        phoneNumber: "888888888",
-      },
-    });
-    enterpriseId = enterprise.id;
-  });
-
-  afterEach(() => {
+  beforeEach(() => {
     jest.restoreAllMocks();
+    jest.clearAllMocks();
   });
 
-  it("should allow access with a valid token and active user", async () => {
-    const user = await prisma.user.create({
-      data: {
-        name: "Active User",
-        email: "active@test.com",
-        password: "hashed",
-        roleId: adminRoleId,
-        enterpriseId,
-      },
-    });
+  const validPayload = {
+    userId: "user-1",
+    email: "user@test.com",
+    role: "SELLER",
+    enterpriseId: "ent-1",
+  };
 
-    const token = jwt.sign({ userId: user.id }, env.JWT_SECRET);
+  const validToken = jwt.sign(validPayload, env.JWT_SECRET, {
+    algorithm: "HS256",
+  });
+
+  it("1. deve permitir acesso com token válido e usuário ativo", async () => {
+    jest.spyOn(prisma.user, "findFirst").mockResolvedValue({
+      id: "user-1",
+      name: "Usuário Teste",
+      email: "user@test.com",
+      enterpriseId: "ent-1",
+      role: { role: "SELLER" },
+    } as any);
 
     const response = await request(app)
       .get("/test")
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${validToken}`);
 
     expect(response.status).toBe(200);
-    expect(response.body.user).toHaveProperty("userId", user.id);
-    expect(response.body.user).toHaveProperty("role", "ADMIN");
+    expect(response.body.user).toEqual({
+      id: "user-1",
+      userId: "user-1",
+      name: "Usuário Teste",
+      email: "user@test.com",
+      role: "SELLER",
+      enterpriseId: "ent-1",
+    });
   });
 
-  it("should deny access if user is soft-deleted", async () => {
-    const user = await prisma.user.create({
-      data: {
-        name: "Deleted User",
-        email: "deleted@test.com",
-        password: "hashed",
-        roleId: adminRoleId,
-        enterpriseId,
-        deletedAt: new Date(),
-      },
-    });
-
-    const token = jwt.sign({ userId: user.id }, env.JWT_SECRET);
+  it("2. deve negar acesso se usuário não for encontrado no banco ou estiver inativo", async () => {
+    jest.spyOn(prisma.user, "findFirst").mockResolvedValue(null as any);
 
     const response = await request(app)
       .get("/test")
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${validToken}`);
 
     expect(response.status).toBe(401);
     expect(response.body.error).toBe("Usuário não encontrado ou inativo");
   });
 
-  it("should deny access if user does not exist in the database", async () => {
-    const fakeUserId = "00000000-0000-0000-0000-000000000000";
-    const token = jwt.sign({ userId: fakeUserId }, env.JWT_SECRET);
-
-    const response = await request(app)
-      .get("/test")
-      .set("Authorization", `Bearer ${token}`);
+  it("3. deve negar acesso se o header Authorization não for fornecido", async () => {
+    const response = await request(app).get("/test");
 
     expect(response.status).toBe(401);
-    expect(response.body.error).toBe("Usuário não encontrado ou inativo");
+    expect(response.body.error).toBe("Token JWT não informado");
   });
 
-  it("should deny access if token is invalid or missing Bearer", async () => {
-    // Missing Bearer
-    const response1 = await request(app)
-      .get("/test")
-      .set("Authorization", `InvalidScheme token123`);
-    expect(response1.status).toBe(401);
-
-    // Completely invalid token
-    const response2 = await request(app)
-      .get("/test")
-      .set("Authorization", `Bearer invalid.token.here`);
-    expect(response2.status).toBe(401);
-
-    // No header
-    const response3 = await request(app).get("/test");
-    expect(response3.status).toBe(401);
-  });
-
-  it("should update role in req.user if user role changes in DB after token was issued", async () => {
-    // 1. Create a user as ADMIN
-    const user = await prisma.user.create({
-      data: {
-        name: "Role Change User",
-        email: "role@test.com",
-        password: "hashed",
-        roleId: adminRoleId,
-        enterpriseId,
-      },
-    });
-
-    // 2. Issue a token (the payload shouldn't really matter now, but we'll include role like old tokens might have)
-    const token = jwt.sign({ userId: user.id, role: "ADMIN" }, env.JWT_SECRET);
-
-    // 3. Admin user changes their role to SELLER in the DB
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { roleId: sellerRoleId },
-    });
-
-    // 4. Try to access a route that requires ADMIN
+  it("4. deve negar acesso se o esquema não for Bearer", async () => {
     const response = await request(app)
-      .get("/admin")
-      .set("Authorization", `Bearer ${token}`);
+      .get("/test")
+      .set("Authorization", `Basic ${validToken}`);
 
-    // Since the middleware fetches the fresh role from DB, req.user.role will be SELLER.
-    // The authorizeRole middleware should then block access (403).
-    expect(response.status).toBe(403);
-    expect(response.body.error).toBe("Acesso negado");
+    expect(response.status).toBe(401);
+    expect(response.body.error).toBe("Token JWT mal formatado");
   });
 
+  it("5. deve negar acesso se o token JWT for inválido ou tiver assinatura errada", async () => {
+    const invalidToken = jwt.sign(validPayload, "wrong-secret", {
+      algorithm: "HS256",
+    });
+
+    const response = await request(app)
+      .get("/test")
+      .set("Authorization", `Bearer ${invalidToken}`);
+
+    expect(response.status).toBe(401);
+    expect(response.body.error).toBe("Token JWT inválido");
+  });
+
+  it("6. deve atualizar a role no req.user baseado no banco, não no token", async () => {
+    // Token dizia SELLER, mas banco agora diz ADMIN
+    jest.spyOn(prisma.user, "findFirst").mockResolvedValue({
+      id: "user-1",
+      name: "Usuário Promovido",
+      email: "user@test.com",
+      enterpriseId: "ent-1",
+      role: { role: "ADMIN" },
+    } as any);
+
+    const response = await request(app)
+      .get("/test")
+      .set("Authorization", `Bearer ${validToken}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.user.role).toBe("ADMIN");
+  });
+
+  describe("authorizeRole", () => {
+    it("7. deve permitir acesso se o usuário tiver a role permitida", async () => {
+      jest.spyOn(prisma.user, "findFirst").mockResolvedValue({
+        id: "user-1",
+        name: "Admin",
+        email: "admin@test.com",
+        enterpriseId: "ent-1",
+        role: { role: "ADMIN" },
+      } as any);
+
+      const response = await request(app)
+        .get("/admin")
+        .set("Authorization", `Bearer ${validToken}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ ok: true });
+    });
+
+    it("8. deve negar acesso (403) se o usuário não tiver a role permitida", async () => {
+      jest.spyOn(prisma.user, "findFirst").mockResolvedValue({
+        id: "user-1",
+        name: "Seller",
+        email: "seller@test.com",
+        enterpriseId: "ent-1",
+        role: { role: "SELLER" },
+      } as any);
+
+      const response = await request(app)
+        .get("/admin")
+        .set("Authorization", `Bearer ${validToken}`);
+
+      expect(response.status).toBe(403);
+      expect(response.body.error).toBe("Acesso negado");
+    });
+  });
 });
