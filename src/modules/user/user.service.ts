@@ -189,7 +189,7 @@ export async function updateProfile(userId: string, data: UpdateProfileInput) {
     if (err.code === "P2002") {
       const target = err.meta?.target as string[] | undefined;
       const targetStr = JSON.stringify(err.meta || "").toLowerCase() + " " + err.message.toLowerCase();
-      
+
       if (target?.includes("email") || targetStr.includes("email")) {
         throw new AppError("E-mail já está em uso", 409);
       }
@@ -359,7 +359,7 @@ export async function deleteUserPermanently(
       await deleteProductMediaFiles(productMediaKeys);
     }
   } catch (error) {
-    console.error("Erro ao excluir arquivos do bucket S3 durante a exclusão de usuário:", error);
+    console.error("Erro ao excluir arquivos do bucket durante a exclusão de usuário:", error);
     throw new AppError("Falha ao remover arquivos associados. A exclusão do usuário foi abortada.", 500);
   }
 

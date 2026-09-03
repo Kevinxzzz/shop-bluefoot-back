@@ -86,7 +86,7 @@ export async function processProductMediaUpload(files: Express.Multer.File[], us
       const isVideo = allowedVideoExts.includes(detected.ext);
 
       if (!isImage && !isVideo) {
-         throw new AppError(`Tipo de arquivo não permitido: ${detected.ext}`, 400);
+        throw new AppError(`Tipo de arquivo não permitido: ${detected.ext}`, 400);
       }
 
       if (isVideo) videoCount++;
@@ -110,57 +110,57 @@ export async function processProductMediaUpload(files: Express.Multer.File[], us
       }
 
       validatedFiles.push({
-         ...file,
-         detectedExt: detected.ext,
-         detectedMime: detected.mime,
-         type: isVideo ? "VIDEO" : "FOTO"
+        ...file,
+        detectedExt: detected.ext,
+        detectedMime: detected.mime,
+        type: isVideo ? "VIDEO" : "FOTO"
       });
     }
 
     const uploadPromises = validatedFiles.map(async (file) => {
-       const key = `enterprise/${enterpriseId}/users/${userId}/products/temp/${randomUUID()}.${file.detectedExt}`;
-       const fileStream = fs.createReadStream(file.path);
-       
-       await s3.send(new PutObjectCommand({
-         Bucket: env.R2_BUCKET_NAME,
-         Key: key,
-         Body: fileStream,
-         ContentType: file.detectedMime,
-       }));
-       
-       // Force close the stream after upload to release the file lock (especially important on Windows)
-       fileStream.destroy();
+      const key = `enterprise/${enterpriseId}/users/${userId}/products/temp/${randomUUID()}.${file.detectedExt}`;
+      const fileStream = fs.createReadStream(file.path);
 
-       return {
-         url: resolveMediaUrl(key),
-         key,
-         type: file.type
-       };
+      await s3.send(new PutObjectCommand({
+        Bucket: env.R2_BUCKET_NAME,
+        Key: key,
+        Body: fileStream,
+        ContentType: file.detectedMime,
+      }));
+
+      // Force close the stream after upload to release the file lock (especially important on Windows)
+      fileStream.destroy();
+
+      return {
+        url: resolveMediaUrl(key),
+        key,
+        type: file.type
+      };
     });
 
     const results = await Promise.allSettled(uploadPromises);
     const hasError = results.some(r => r.status === "rejected");
 
     if (hasError) {
-       const successfulKeys = results
-         .filter((r): r is PromiseFulfilledResult<any> => r.status === "fulfilled")
-         .map(r => r.value.key);
-         
-       if (successfulKeys.length > 0) {
-          try {
-             await s3.send(new DeleteObjectsCommand({
-                Bucket: env.R2_BUCKET_NAME,
-                Delete: { Objects: successfulKeys.map(k => ({ Key: k })) }
-             }));
-          } catch (cleanupErr) {
-             console.error("Erro no rollback de uploads parciais no S3", cleanupErr);
-          }
-       }
-       // We can log the first rejection reason for debugging
-       const firstError = results.find(r => r.status === "rejected") as PromiseRejectedResult;
-       console.error("S3 Upload Error:", firstError.reason);
+      const successfulKeys = results
+        .filter((r): r is PromiseFulfilledResult<any> => r.status === "fulfilled")
+        .map(r => r.value.key);
 
-       throw new AppError("Erro durante o upload para a nuvem. Processo cancelado.", 500);
+      if (successfulKeys.length > 0) {
+        try {
+          await s3.send(new DeleteObjectsCommand({
+            Bucket: env.R2_BUCKET_NAME,
+            Delete: { Objects: successfulKeys.map(k => ({ Key: k })) }
+          }));
+        } catch (cleanupErr) {
+          console.error("Erro no rollback de uploads parciais no S3", cleanupErr);
+        }
+      }
+      // We can log the first rejection reason for debugging
+      const firstError = results.find(r => r.status === "rejected") as PromiseRejectedResult;
+      console.error("S3 Upload Error:", firstError.reason);
+
+      throw new AppError("Erro durante o upload para a nuvem. Processo cancelado.", 500);
     }
 
     return results
@@ -168,17 +168,17 @@ export async function processProductMediaUpload(files: Express.Multer.File[], us
       .map(r => r.value);
 
   } finally {
-     if (files && files.length > 0) {
-        await Promise.allSettled(files.map(async (f) => {
-           if (f.path) {
-              try {
-                await fs.promises.unlink(f.path);
-              } catch (e) {
-                console.error(`Erro ao apagar arquivo temporario ${f.path}`, e);
-              }
-           }
-        }));
-     }
+    if (files && files.length > 0) {
+      await Promise.allSettled(files.map(async (f) => {
+        if (f.path) {
+          try {
+            await fs.promises.unlink(f.path);
+          } catch (e) {
+            console.error(`Erro ao apagar arquivo temporario ${f.path}`, e);
+          }
+        }
+      }));
+    }
   }
 }
 
@@ -209,7 +209,7 @@ export async function deleteProductMediaFiles(keys: string[]) {
     );
   } catch (err) {
     console.error("Failed to delete product media from S3:", err, keys);
-    throw new AppError("Falha ao deletar arquivos de mídia na AWS.", 500);
+    throw new AppError("Falha ao deletar arquivos de mídia na Cloud flare R2.", 500);
   }
 }
 
