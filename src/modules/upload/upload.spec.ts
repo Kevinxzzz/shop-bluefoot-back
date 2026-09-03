@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
+import type {} from "multer";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -65,7 +66,7 @@ describe("Upload Service", () => {
   };
 
   describe("processProductMediaUpload", () => {
-    it("1. deve processar upload válido com 1 vídeo e 3 imagens", async () => {
+    it("1. deve rejeitar upload contendo vídeo por causa de bloqueio temporário", async () => {
       const files = [
         createMockFile({ mimetype: "video/mp4", originalname: "v.mp4" }),
         createMockFile({ mimetype: "image/jpeg", originalname: "i1.jpg" }),
@@ -73,11 +74,25 @@ describe("Upload Service", () => {
         createMockFile({ mimetype: "image/jpeg", originalname: "i3.jpg" }),
       ];
 
+      await expect(
+        processProductMediaUpload(files, userId, enterpriseId)
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message: "O upload de vídeos está temporariamente desabilitado.",
+      });
+    });
+
+    it("1.1. deve processar upload válido com 3 imagens", async () => {
+      const files = [
+        createMockFile({ mimetype: "image/jpeg", originalname: "i1.jpg" }),
+        createMockFile({ mimetype: "image/jpeg", originalname: "i2.jpg" }),
+        createMockFile({ mimetype: "image/jpeg", originalname: "i3.jpg" }),
+      ];
+
       const result = await processProductMediaUpload(files, userId, enterpriseId);
 
-      expect(result).toHaveLength(4);
-      expect(result[0].type).toBe("VIDEO");
-      expect(result[1].type).toBe("FOTO");
+      expect(result).toHaveLength(3);
+      expect(result[0].type).toBe("FOTO");
       expect(result[0].key).toContain(
         `enterprise/${enterpriseId}/users/${userId}/products/temp/`
       );
@@ -93,7 +108,7 @@ describe("Upload Service", () => {
       });
     });
 
-    it("3. deve lançar erro se houver mais de 1 vídeo", async () => {
+    it("3. deve lançar erro se tentar enviar vídeo (limite antigo seria mais de 1 vídeo)", async () => {
       const files = [
         createMockFile({ mimetype: "video/mp4", originalname: "v1.mp4" }),
         createMockFile({ mimetype: "video/mp4", originalname: "v2.mp4" }),
@@ -103,7 +118,7 @@ describe("Upload Service", () => {
         processProductMediaUpload(files, userId, enterpriseId)
       ).rejects.toMatchObject({
         statusCode: 400,
-        message: "Apenas 1 vídeo é permitido",
+        message: "O upload de vídeos está temporariamente desabilitado.",
       });
     });
 
@@ -123,20 +138,20 @@ describe("Upload Service", () => {
       });
     });
 
-    it("5. deve lançar erro se o tamanho da imagem for > 5MB", async () => {
+    it("5. deve lançar erro se o tamanho da imagem for > 1MB", async () => {
       const files = [
-        createMockFile({ size: 6 * 1024 * 1024, mimetype: "image/jpeg", originalname: "large.jpg" }),
+        createMockFile({ size: 1.5 * 1024 * 1024, mimetype: "image/jpeg", originalname: "large.jpg" }),
       ];
 
       await expect(
         processProductMediaUpload(files, userId, enterpriseId)
       ).rejects.toMatchObject({
         statusCode: 400,
-        message: expect.stringContaining("excede o limite de 5MB"),
+        message: expect.stringContaining("excede o limite de 1MB"),
       });
     });
 
-    it("6. deve lançar erro se o tamanho do vídeo for > 20MB", async () => {
+    it("6. deve lançar erro de vídeo desabilitado antes de validar limite de 20MB", async () => {
       const files = [
         createMockFile({
           size: 21 * 1024 * 1024,
@@ -149,7 +164,7 @@ describe("Upload Service", () => {
         processProductMediaUpload(files, userId, enterpriseId)
       ).rejects.toMatchObject({
         statusCode: 400,
-        message: expect.stringContaining("excede o limite de 20MB"),
+        message: expect.stringContaining("O upload de vídeos está temporariamente desabilitado"),
       });
     });
 
@@ -185,18 +200,15 @@ describe("Upload Service", () => {
     it("8. deve atualizar imagem de perfil e deletar avatar antigo do S3", async () => {
       jest.spyOn(prisma.user, "findUnique").mockResolvedValue({
         id: userId,
-        profileImageUrl: "https://old.url/old-avatar.jpg",
         profileImageKey: "old-avatar.jpg",
       } as any);
 
       jest.spyOn(prisma.user, "update").mockResolvedValue({
         id: userId,
-        profileImageUrl: "https://s3/new-avatar.jpg",
         profileImageKey: "new-avatar.jpg",
       } as any);
 
       const data = {
-        location: "https://s3/new-avatar.jpg",
         key: "new-avatar.jpg",
       };
 
@@ -206,7 +218,6 @@ describe("Upload Service", () => {
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: userId },
         data: {
-          profileImageUrl: data.location,
           profileImageKey: data.key,
         },
       });
@@ -219,7 +230,6 @@ describe("Upload Service", () => {
       jest.spyOn(prisma.user, "findUnique").mockResolvedValue(null as any);
 
       const data = {
-        location: "https://s3/new-avatar.jpg",
         key: "new-avatar.jpg",
       };
 
@@ -232,7 +242,6 @@ describe("Upload Service", () => {
     it("10. deve fazer rollback no S3 do novo avatar se o update no banco falhar", async () => {
       jest.spyOn(prisma.user, "findUnique").mockResolvedValue({
         id: userId,
-        profileImageUrl: null,
         profileImageKey: null,
       } as any);
 
@@ -241,7 +250,6 @@ describe("Upload Service", () => {
         .mockRejectedValue(new Error("DB Connection Error") as never);
 
       const data = {
-        location: "https://s3/new-avatar.jpg",
         key: "new-avatar.jpg",
       };
 
@@ -261,7 +269,6 @@ describe("Upload Service", () => {
     it("11. não deve falhar se a deleção do avatar antigo falhar no S3", async () => {
       jest.spyOn(prisma.user, "findUnique").mockResolvedValue({
         id: userId,
-        profileImageUrl: "https://old.url/old.jpg",
         profileImageKey: "old.jpg",
       } as any);
 
@@ -276,7 +283,6 @@ describe("Upload Service", () => {
       jest.spyOn(console, "error").mockImplementation(() => {});
 
       const data = {
-        location: "https://s3/new-avatar.jpg",
         key: "new-avatar.jpg",
       };
 
