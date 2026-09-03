@@ -8,27 +8,27 @@ import { Prisma } from "@prisma/client";
 // Módulos externos refatorados
 import { moveProductMediaFiles, deleteProductMediaFiles } from "../upload/upload.service.js";
 import { resolveMediaUrl } from "../../shared/utils/resolveMediaUrl.js";
-import { 
+import {
   getAuthorizedProduct,
   validateEnterpriseReadPermission,
-  validateUserReadPermission 
+  validateUserReadPermission
 } from "./product.authorization.js";
-import { 
-  validateKeepMediaIds, 
-  calculateFinalMediaState, 
-  resolveMainMedia 
+import {
+  validateKeepMediaIds,
+  calculateFinalMediaState,
+  resolveMainMedia
 } from "./product-media.rules.js";
 
-function resolveProductUrls<T extends { media: any[]; user: { profileImageUrl: string | null; profileImageKey?: string | null } }>(product: T) {
+function resolveProductUrls<T extends { media: any[]; user: { profileImageKey?: string | null } }>(product: T) {
   return {
     ...product,
     media: product.media.map((m: any) => ({
       ...m,
-      url: resolveMediaUrl(m.key) ?? m.url,
+      url: resolveMediaUrl(m.key),
     })),
     user: {
       ...product.user,
-      profileImageUrl: resolveMediaUrl(product.user.profileImageKey) ?? product.user.profileImageUrl,
+      profileImageUrl: resolveMediaUrl(product.user.profileImageKey),
     },
   };
 }
@@ -51,7 +51,7 @@ export async function createProduct(
     });
 
     if (categories.length !== data.categoryIds.length) {
-      throw new AppError("One or more categories are invalid.", 400);
+      throw new AppError("Uma ou mais categorias estão inválidas.", 400);
     }
   }
 
@@ -97,15 +97,14 @@ export async function createProduct(
 
   if (data.media && data.media.length > 0) {
     // moveProductMediaFiles handles rollback inside it if there's any partial failure
-    const moved = await moveProductMediaFiles(data.media as any, enterpriseId, productId);
-    
+    const moved = await moveProductMediaFiles(data.media as any, enterpriseId, userId, productId);
+
     movedKeys = moved.map(m => m.newKey);
     originalKeys = moved.map(m => m.originalKey);
 
     let index = 0;
     for (const m of moved) {
       mediaRecords.push({
-        url: m.newUrl,
         key: m.newKey,
         type: m.type as any,
         isMain: m.isMain ?? false,
@@ -152,7 +151,7 @@ export async function createProduct(
 
     // 5. Deletar os arquivos temporários APENAS após o sucesso da transação
     if (originalKeys.length > 0) {
-      deleteProductMediaFiles(originalKeys).catch(() => {});
+      deleteProductMediaFiles(originalKeys).catch(() => { });
     }
 
     return product;
@@ -161,6 +160,10 @@ export async function createProduct(
     if (movedKeys.length > 0) {
       const { rollbackProductMediaFiles } = await import("../upload/upload.service.js");
       await rollbackProductMediaFiles(movedKeys);
+    }
+    // Deletar também os arquivos temporários originais (temp) se a transação falhar
+    if (originalKeys.length > 0) {
+      deleteProductMediaFiles(originalKeys).catch(() => { });
     }
     throw error;
   }
@@ -212,7 +215,7 @@ export async function getEnterpriseProductsPublic(
           },
         },
         media: true,
-        user: { select: { id: true, name: true, profileImageUrl: true, profileImageKey: true } },
+        user: { select: { id: true, name: true, profileImageKey: true } },
       },
     }),
     prisma.product.count({
@@ -253,7 +256,7 @@ export async function getUserProducts(
           },
         },
         media: true,
-        user: { select: { id: true, name: true, profileImageUrl: true, profileImageKey: true } },
+        user: { select: { id: true, name: true, profileImageKey: true } },
       },
     }),
     prisma.product.count({
@@ -290,11 +293,11 @@ export async function getPublicProductById(id: string) {
         },
       },
       media: {
-        select: { id: true, url: true, key: true, type: true, isMain: true, order: true },
+        select: { id: true, key: true, type: true, isMain: true, order: true },
         orderBy: { order: "asc" as const },
       },
       user: {
-        select: { id: true, name: true, contactLink: true, profileImageUrl: true, profileImageKey: true },
+        select: { id: true, name: true, contactLink: true, profileImageKey: true },
       },
     },
   });
@@ -305,13 +308,13 @@ export async function getPublicProductById(id: string) {
 
   return {
     ...product,
-    media: product.media.map((m) => ({
+    media: product.media.map((m: any) => ({
       ...m,
-      url: resolveMediaUrl(m.key) ?? m.url,
+      url: resolveMediaUrl(m.key),
     })),
     user: {
       ...product.user,
-      profileImageUrl: resolveMediaUrl(product.user.profileImageKey) ?? product.user.profileImageUrl,
+      profileImageUrl: resolveMediaUrl(product.user.profileImageKey),
     },
   };
 }
@@ -380,13 +383,13 @@ export async function updateProductMedia(
   id: string,
   user: { userId: string; role: string; enterpriseId: string },
   data: { keepMediaIds: string[] },
-  newFiles: Array<{ url: string; key: string; type: "FOTO" | "VIDEO" }>
+  newFiles: Array<{ key: string; type: "FOTO" | "VIDEO" }>
 ) {
   const product = await getAuthorizedProduct(id, user, "update");
 
   const currentMedias = product.media;
   const currentMediaMap = new Map(currentMedias.map((m) => [m.id, m as any]));
-  
+
   validateKeepMediaIds(data.keepMediaIds, currentMediaMap);
 
   const { mainPhotoKept, firstKeptPhotoId } = calculateFinalMediaState(
@@ -400,9 +403,9 @@ export async function updateProductMedia(
   let originalKeys: string[] = [];
   let firstNewPhotoKey: string | null = null;
   let orderIndex = data.keepMediaIds.length;
-  
+
   if (newFiles.length > 0) {
-    const moved = await moveProductMediaFiles(newFiles as any, user.enterpriseId, id);
+    const moved = await moveProductMediaFiles(newFiles as any, user.enterpriseId, user.userId, id);
     movedKeys = moved.map(m => m.newKey);
     originalKeys = moved.map(m => m.originalKey);
 
@@ -411,7 +414,6 @@ export async function updateProductMedia(
         firstNewPhotoKey = file.newKey;
       }
       mediaRecordsToInsert.push({
-        url: file.newUrl,
         key: file.newKey,
         type: file.type as any,
         isMain: false,
@@ -455,11 +457,11 @@ export async function updateProductMedia(
     });
 
     if (mediaToDelete.length > 0) {
-      deleteProductMediaFiles(mediaToDelete.map(m => m.key)).catch(() => {});
+      deleteProductMediaFiles(mediaToDelete.map(m => m.key)).catch(() => { });
     }
 
     if (originalKeys.length > 0) {
-      deleteProductMediaFiles(originalKeys).catch(() => {});
+      deleteProductMediaFiles(originalKeys).catch(() => { });
     }
 
     return prisma.product.findUnique({
@@ -470,6 +472,9 @@ export async function updateProductMedia(
     if (movedKeys.length > 0) {
       const { rollbackProductMediaFiles } = await import("../upload/upload.service.js");
       await rollbackProductMediaFiles(movedKeys);
+    }
+    if (originalKeys.length > 0) {
+      deleteProductMediaFiles(originalKeys).catch(() => { });
     }
     throw error;
   }
@@ -487,6 +492,6 @@ export async function deleteProduct(
   });
 
   if (mediaKeys.length > 0) {
-    deleteProductMediaFiles(mediaKeys).catch(() => {});
+    deleteProductMediaFiles(mediaKeys).catch(() => { });
   }
 }

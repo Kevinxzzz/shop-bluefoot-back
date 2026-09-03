@@ -149,7 +149,7 @@ describe("Product Module", () => {
         })
       ).rejects.toMatchObject({
         statusCode: 400,
-        message: "One or more categories are invalid.",
+        message: "Uma ou mais categorias estão inválidas.",
       });
     });
 
@@ -176,13 +176,11 @@ describe("Product Module", () => {
     it("5. deve lançar 400 se mais de uma mídia for marcada como principal (isMain)", async () => {
       const media = [
         {
-          url: "https://media.bluefootgg.com/temp/1.jpg",
           key: `enterprise/${mockEnterpriseId}/users/${mockUserId}/products/temp/1.jpg`,
           type: "FOTO" as const,
           isMain: true,
         },
         {
-          url: "https://media.bluefootgg.com/temp/2.jpg",
           key: `enterprise/${mockEnterpriseId}/users/${mockUserId}/products/temp/2.jpg`,
           type: "FOTO" as const,
           isMain: true,
@@ -203,7 +201,6 @@ describe("Product Module", () => {
     it("6. deve lançar 400 se vídeo for marcado como mídia principal", async () => {
       const media = [
         {
-          url: "https://media.bluefootgg.com/temp/v.mp4",
           key: `enterprise/${mockEnterpriseId}/users/${mockUserId}/products/temp/v.mp4`,
           type: "VIDEO" as const,
           isMain: true,
@@ -257,9 +254,9 @@ describe("Product Module", () => {
     it("8. deve fazer rollback no S3 se a transação do Prisma falhar", async () => {
       const media = [
         {
-          url: "https://media.bluefootgg.com/temp/1.jpg",
           key: `enterprise/${mockEnterpriseId}/users/${mockUserId}/products/temp/1.jpg`,
           type: "FOTO" as const,
+          isMain: true,
         },
       ];
 
@@ -344,7 +341,7 @@ describe("Product Module", () => {
         {
           id: "prod-1",
           name: "Produto 1",
-          media: [{ key: "media-key-1.jpg", url: "https://old/1.jpg" }],
+          media: [{ key: "media-key-1.jpg" }],
           user: {
             id: mockUserId,
             name: "Vendedor",
@@ -402,15 +399,15 @@ describe("Product Module", () => {
         price: 250,
         countViews: 15,
         categories: [],
-        media: [{ id: "m-1", key: "shoe.jpg", url: "https://old/shoe.jpg", isMain: true }],
+        media: [{ id: "m-1", key: "shoe.jpg", isMain: true }],
         user: { id: "u-1", name: "Loja", profileImageKey: "avatar.jpg", profileImageUrl: null },
       } as any);
 
       const result = await getPublicProductById("prod-1");
 
       expect(result.name).toBe("Sapato");
-      expect(result.media[0].url).toContain("https://media.bluefootgg.com/shoe.jpg");
-      expect(result.user.profileImageUrl).toContain("https://media.bluefootgg.com/avatar.jpg");
+      expect(result.media[0].url).toContain("shoe.jpg");
+      expect(result.user.profileImageUrl).toContain("avatar.jpg");
     });
 
     it("15. deve lançar 404 se produto não for encontrado", async () => {

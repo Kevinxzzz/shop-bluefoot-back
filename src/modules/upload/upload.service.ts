@@ -13,7 +13,6 @@ export async function updateProfileImage(
   const currentUser = await prisma.user.findUnique({
     where: { id: userId },
     select: {
-      profileImageUrl: true,
       profileImageKey: true,
     },
   });
@@ -26,7 +25,6 @@ export async function updateProfileImage(
     await prisma.user.update({
       where: { id: userId },
       data: {
-        profileImageUrl: data.location,
         profileImageKey: data.key,
       },
     });
@@ -102,9 +100,14 @@ export async function processProductMediaUpload(files: Express.Multer.File[], us
 
       // Size limits
       const fileSizeInMB = file.size / (1024 * 1024);
-      if (isImage && fileSizeInMB > 5) {
-        throw new AppError(`A imagem ${file.originalname} excede o limite de 5MB`, 400);
+      if (isImage && fileSizeInMB > 1) {
+        throw new AppError(`A imagem ${file.originalname} excede o limite de 1MB`, 400);
       }
+      
+      if (isVideo) {
+        throw new AppError("O upload de vídeos está temporariamente desabilitado.", 400);
+      }
+      
       if (isVideo && fileSizeInMB > 20) {
         throw new AppError(`O vídeo ${file.originalname} excede o limite de 20MB`, 400);
       }
@@ -214,14 +217,14 @@ export async function deleteProductMediaFiles(keys: string[]) {
 }
 
 export async function moveProductMediaFiles(
-  files: Array<{ url: string; key: string; type: "FOTO" | "VIDEO" }>,
+  files: Array<{ key: string; type: "FOTO" | "VIDEO" }>,
   enterpriseId: string,
+  userId: string,
   productId: string
 ) {
   const uploadPromises = files.map(async (m) => {
     const fileName = m.key.split("/").pop();
-    const newKey = `enterprise/${enterpriseId}/products/${productId}/${fileName}`;
-    const newUrl = resolveMediaUrl(newKey);
+    const newKey = `enterprise/${enterpriseId}/users/${userId}/products/${productId}/${fileName}`;
 
     await s3.send(
       new CopyObjectCommand({
@@ -231,7 +234,7 @@ export async function moveProductMediaFiles(
       })
     );
 
-    return { ...m, originalKey: m.key, newKey, newUrl };
+    return { ...m, originalKey: m.key, newKey };
   });
 
   const results = await Promise.allSettled(uploadPromises);

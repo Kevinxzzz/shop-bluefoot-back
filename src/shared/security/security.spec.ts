@@ -32,8 +32,9 @@ describe("Security Measures (Helmet, CORS & Rate Limiting)", () => {
         .options("/health")
         .set("Origin", "http://malicious-site.com");
       
-      // The browser is responsible for blocking if the header is missing
-      expect(response.headers["access-control-allow-origin"]).toBeUndefined();
+      // Como o origin está fixado em uma string única, o header ACAO sempre retorna a URL permitida
+      expect(response.headers["access-control-allow-origin"]).toBe(env.FRONTEND_URL);
+      expect(response.headers["access-control-allow-origin"]).not.toBe("http://malicious-site.com");
     });
   });
 
@@ -87,8 +88,8 @@ describe("Security Measures (Helmet, CORS & Rate Limiting)", () => {
         password: "password123",
       };
 
-      // Limiter configurado no authLimiter é de 5 requisições
-      for (let i = 0; i < 5; i++) {
+      // Limiter configurado no authLimiter é de 10 requisições
+      for (let i = 0; i < 10; i++) {
         await request(app).post("/auth/login").send(loginPayload);
       }
 
