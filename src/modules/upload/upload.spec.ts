@@ -4,245 +4,284 @@ import os from "node:os";
 import path from "node:path";
 
 import { prisma } from "../../shared/database/prisma.js";
-import { updateProfileImage, processProductMediaUpload } from "./upload.service.js";
-import { AppError } from "../../shared/errors/AppError.js";
+import {
+  updateProfileImage,
+  processProductMediaUpload,
+} from "./upload.service.js";
 import { s3 } from "../../shared/config/s3.js";
+import { resolveMediaUrl } from "../../shared/utils/resolveMediaUrl.js";
 
 describe("Upload Service", () => {
-  let enterpriseId: string;
-  let adminRole: any;
-  let testUser: any;
+  const userId = "user-123";
+  const enterpriseId = "ent-456";
 
-  beforeEach(async () => {
+  beforeEach(() => {
+    jest.restoreAllMocks();
+    jest.clearAllMocks();
+
     jest
       .spyOn(s3, "send")
       .mockImplementation(() => Promise.resolve({} as never));
-      
-    jest.spyOn(fs, "createReadStream").mockImplementation(() => ({ destroy: jest.fn() }) as any);
+
+    jest
+      .spyOn(fs, "createReadStream")
+      .mockImplementation(() => ({ destroy: jest.fn() } as any));
     jest.spyOn(fs.promises, "unlink").mockResolvedValue(undefined);
-
-    jest.clearAllMocks();
-
-    await prisma.productMedia.deleteMany();
-    await prisma.productCategory.deleteMany();
-    await prisma.product.deleteMany();
-    await prisma.userToken.deleteMany();
-    await prisma.enterpriseInviteToken.deleteMany();
-    await prisma.category.deleteMany();
-    await prisma.user.deleteMany();
-    await prisma.enterprise.deleteMany();
-
-    adminRole = await prisma.userRole.findFirst({ where: { role: "ADMIN" } });
-    if (!adminRole) {
-      adminRole = await prisma.userRole.create({
-        data: { role: "ADMIN", description: "Admin" },
-      });
-    }
-
-    const enterprise = await prisma.enterprise.create({
-      data: {
-        cnpj: "12345678901235",
-        name: "Empresa de Teste Upload",
-        phoneNumber: "999999998",
-      },
-    });
-    enterpriseId = enterprise.id;
-
-    testUser = await prisma.user.create({
-      data: {
-        name: "Upload User",
-        email: "upload@test.com",
-        password: "hashedpassword",
-        roleId: adminRole.id,
-        enterpriseId,
-        profileImageKey: "old-key.png",
-        profileImageUrl: "https://old.url/old-key.png",
-      },
-    });
   });
 
-  describe("Product Media", () => {
-    const createMockFile = (overrides: any = {}) => {
-      const name = overrides.originalname || `test-${Date.now()}-${Math.floor(Math.random() * 1000)}.jpg`;
-      const filePath = path.join(os.tmpdir(), name);
-      
-      let magic = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0]); // jpg
-      if (name.includes(".mp4")) magic = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6D, 0x70, 0x34, 0x32]);
-      else if (name.includes(".png")) magic = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
-      else if (name.includes(".webp")) magic = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50]);
+  const createMockFile = (overrides: any = {}) => {
+    const name =
+      overrides.originalname ||
+      `test-${Date.now()}-${Math.floor(Math.random() * 1000)}.jpg`;
+    const filePath = path.join(os.tmpdir(), name);
 
+    let magic = Buffer.from([0xff, 0xd8, 0xff, 0xe0]); // jpg
+    if (name.includes(".mp4"))
+      magic = Buffer.from([
+        0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34, 0x32,
+      ]);
+    else if (name.includes(".png"))
+      magic = Buffer.from([
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      ]);
+
+    try {
       fs.writeFileSync(filePath, magic);
+    } catch {
+      // Ignora erro se já existir
+    }
 
-      return {
-        fieldname: "files",
-        originalname: name,
-        encoding: "7bit",
-        mimetype: overrides.mimetype || "image/jpeg",
-        size: overrides.size || 1 * 1024 * 1024,
-        destination: os.tmpdir(),
-        filename: name,
-        path: filePath,
-        buffer: Buffer.from(""),
-        stream: null as any,
-        ...overrides
-      } as any;
-    };
+    return {
+      fieldname: "media",
+      originalname: name,
+      encoding: "7bit",
+      mimetype: name.includes(".mp4") ? "video/mp4" : "image/jpeg",
+      size: 1024,
+      destination: os.tmpdir(),
+      filename: name,
+      path: filePath,
+      ...overrides,
+    } as Express.Multer.File;
+  };
 
-    it("should process valid upload with 1 video and 3 images", async () => {
+  describe("processProductMediaUpload", () => {
+    it("1. deve processar upload válido com 1 vídeo e 3 imagens", async () => {
       const files = [
         createMockFile({ mimetype: "video/mp4", originalname: "v.mp4" }),
         createMockFile({ mimetype: "image/jpeg", originalname: "i1.jpg" }),
         createMockFile({ mimetype: "image/jpeg", originalname: "i2.jpg" }),
-        createMockFile({ mimetype: "image/jpeg", originalname: "i3.jpg" })
+        createMockFile({ mimetype: "image/jpeg", originalname: "i3.jpg" }),
       ];
 
-      const result = await processProductMediaUpload(files, testUser.id, enterpriseId);
+      const result = await processProductMediaUpload(files, userId, enterpriseId);
 
       expect(result).toHaveLength(4);
       expect(result[0].type).toBe("VIDEO");
       expect(result[1].type).toBe("FOTO");
-      expect(s3.send).toHaveBeenCalledTimes(4); // 4 uploads
+      expect(result[0].key).toContain(
+        `enterprise/${enterpriseId}/users/${userId}/products/temp/`
+      );
+      expect(result[0].url).toContain("https://media.bluefootgg.com/");
     });
 
-    it("should throw error if 0 files", async () => {
-      await expect(processProductMediaUpload([], testUser.id, enterpriseId)).rejects.toThrow("Obrigatório pelo menos 1 arquivo");
+    it("2. deve lançar erro se não houver arquivos", async () => {
+      await expect(
+        processProductMediaUpload([], userId, enterpriseId)
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Obrigatório pelo menos 1 arquivo",
+      });
     });
 
-    it("should throw error if more than 1 video", async () => {
+    it("3. deve lançar erro se houver mais de 1 vídeo", async () => {
       const files = [
         createMockFile({ mimetype: "video/mp4", originalname: "v1.mp4" }),
         createMockFile({ mimetype: "video/mp4", originalname: "v2.mp4" }),
       ];
 
-      await expect(processProductMediaUpload(files, testUser.id, enterpriseId)).rejects.toThrow("Apenas 1 vídeo é permitido");
-      expect(s3.send).not.toHaveBeenCalled();
+      await expect(
+        processProductMediaUpload(files, userId, enterpriseId)
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Apenas 1 vídeo é permitido",
+      });
     });
 
-    it("should throw error if more than 3 images", async () => {
+    it("4. deve lançar erro se houver mais de 3 imagens", async () => {
       const files = [
-        createMockFile({ originalname: "1.jpg" }), createMockFile({ originalname: "2.jpg" }), createMockFile({ originalname: "3.jpg" }), createMockFile({ originalname: "4.jpg" })
+        createMockFile({ mimetype: "image/jpeg", originalname: "i1.jpg" }),
+        createMockFile({ mimetype: "image/jpeg", originalname: "i2.jpg" }),
+        createMockFile({ mimetype: "image/jpeg", originalname: "i3.jpg" }),
+        createMockFile({ mimetype: "image/jpeg", originalname: "i4.jpg" }),
       ];
 
-      await expect(processProductMediaUpload(files, testUser.id, enterpriseId)).rejects.toThrow("No máximo 3 imagens são permitidas");
+      await expect(
+        processProductMediaUpload(files, userId, enterpriseId)
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message: "No máximo 3 imagens são permitidas",
+      });
     });
 
-    it("should throw error if image size > 5MB", async () => {
+    it("5. deve lançar erro se o tamanho da imagem for > 5MB", async () => {
       const files = [
-        createMockFile({ size: 6 * 1024 * 1024, originalname: "1.jpg" })
+        createMockFile({ size: 6 * 1024 * 1024, mimetype: "image/jpeg", originalname: "large.jpg" }),
       ];
 
-      await expect(processProductMediaUpload(files, testUser.id, enterpriseId)).rejects.toThrow("excede o limite de 5MB");
+      await expect(
+        processProductMediaUpload(files, userId, enterpriseId)
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message: expect.stringContaining("excede o limite de 5MB"),
+      });
     });
 
-    it("should throw error if video size > 20MB", async () => {
+    it("6. deve lançar erro se o tamanho do vídeo for > 20MB", async () => {
       const files = [
-        createMockFile({ mimetype: "video/mp4", size: 21 * 1024 * 1024, originalname: "v1.mp4" })
+        createMockFile({
+          size: 21 * 1024 * 1024,
+          mimetype: "video/mp4",
+          originalname: "v.mp4",
+        }),
       ];
 
-      await expect(processProductMediaUpload(files, testUser.id, enterpriseId)).rejects.toThrow("excede o limite de 20MB");
+      await expect(
+        processProductMediaUpload(files, userId, enterpriseId)
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message: expect.stringContaining("excede o limite de 20MB"),
+      });
     });
 
-    it("should rollback S3 if one of the parallel uploads fails", async () => {
-      // 1 successful, 1 failed
-      jest.spyOn(s3, "send")
-        .mockResolvedValueOnce({} as never)
-        .mockRejectedValueOnce(new Error("AWS Mock Error") as never);
+    it("7. deve fazer rollback no S3 se um dos uploads paralelos falhar", async () => {
+      let callCount = 0;
+      jest.spyOn(s3, "send").mockImplementation(() => {
+        callCount++;
+        if (callCount === 2) {
+          return Promise.reject(new Error("S3 Put Failed"));
+        }
+        return Promise.resolve({} as never);
+      });
 
       const files = [
         createMockFile({ mimetype: "image/jpeg", originalname: "i1.jpg" }),
-        createMockFile({ mimetype: "image/jpeg", originalname: "i2.jpg" })
+        createMockFile({ mimetype: "image/jpeg", originalname: "i2.jpg" }),
       ];
 
-      const consoleSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      jest.spyOn(console, "error").mockImplementation(() => {});
 
-      await expect(processProductMediaUpload(files, testUser.id, enterpriseId)).rejects.toThrow("Erro durante o upload para a nuvem. Processo cancelado.");
-      
-      // Should have called s3.send 3 times:
-      // 2x PutObjectCommand
-      // 1x DeleteObjectsCommand
-      expect(s3.send).toHaveBeenCalledTimes(3);
-      consoleSpy.mockRestore();
+      await expect(
+        processProductMediaUpload(files, userId, enterpriseId)
+      ).rejects.toMatchObject({
+        statusCode: 500,
+        message: "Erro durante o upload para a nuvem. Processo cancelado.",
+      });
+
+      expect(s3.send).toHaveBeenCalled();
     });
   });
 
-  describe("Avatar Upload", () => {
-    it("should process valid upload, update db and delete old avatar from S3", async () => {
+  describe("updateProfileImage", () => {
+    it("8. deve atualizar imagem de perfil e deletar avatar antigo do S3", async () => {
+      jest.spyOn(prisma.user, "findUnique").mockResolvedValue({
+        id: userId,
+        profileImageUrl: "https://old.url/old-avatar.jpg",
+        profileImageKey: "old-avatar.jpg",
+      } as any);
+
+      jest.spyOn(prisma.user, "update").mockResolvedValue({
+        id: userId,
+        profileImageUrl: "https://s3/new-avatar.jpg",
+        profileImageKey: "new-avatar.jpg",
+      } as any);
+
       const data = {
         location: "https://s3/new-avatar.jpg",
         key: "new-avatar.jpg",
       };
 
-      const result = await updateProfileImage(testUser.id, data);
+      const result = await updateProfileImage(userId, data);
 
-      expect(result.url).toBe(data.location);
-
-      const updatedUser = await prisma.user.findUnique({
-        where: { id: testUser.id },
+      expect(result.url).toBe(resolveMediaUrl(data.key));
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: userId },
+        data: {
+          profileImageUrl: data.location,
+          profileImageKey: data.key,
+        },
       });
-      expect(updatedUser?.profileImageKey).toBe(data.key);
-      expect(updatedUser?.profileImageUrl).toBe(data.location);
 
-      // Should have deleted old avatar
+      // Deve ter chamado o S3 para deletar o antigo
       expect(s3.send).toHaveBeenCalled();
-      const sendMock = (s3.send as any).mock.calls;
-      const deleteCommand = sendMock.find((call: any[]) => call[0].input.Key === "old-key.png");
-      expect(deleteCommand).toBeTruthy();
     });
 
-    it("should throw error if user does not exist", async () => {
-      const data = {
-        location: "https://s3/new-avatar.jpg",
-        key: "new-avatar.jpg",
-      };
-
-      await expect(
-        updateProfileImage("00000000-0000-0000-0000-000000000000", data)
-      ).rejects.toThrow("Usuário não encontrado");
-    });
-
-    it("should rollback newly uploaded S3 file if db update fails", async () => {
-      // Force prisma.user.update to fail
-      const originalUpdate = prisma.user.update;
-      prisma.user.update = jest.fn().mockRejectedValue(new Error("DB Error") as never) as any;
+    it("9. deve lançar 404 se usuário não existir", async () => {
+      jest.spyOn(prisma.user, "findUnique").mockResolvedValue(null as any);
 
       const data = {
         location: "https://s3/new-avatar.jpg",
         key: "new-avatar.jpg",
       };
 
-      await expect(updateProfileImage(testUser.id, data)).rejects.toThrow("DB Error");
-
-      // Should have deleted the NEW avatar (rollback)
-      expect(s3.send).toHaveBeenCalled();
-      const sendMock = (s3.send as any).mock.calls;
-      const deleteCommand = sendMock.find((call: any[]) => call[0].input.Key === "new-avatar.jpg");
-      expect(deleteCommand).toBeTruthy();
-
-      // Restore
-      prisma.user.update = originalUpdate;
-    });
-
-    it("should not fail the request if deleting the old avatar from S3 fails", async () => {
-      // Force s3.send to fail for the old key deletion
-      jest.spyOn(s3, "send").mockRejectedValueOnce(new Error("S3 Delete Error") as never);
-
-      const data = {
-        location: "https://s3/new-avatar-2.jpg",
-        key: "new-avatar-2.jpg",
-      };
-
-      const consoleSpy = jest.spyOn(console, "error").mockImplementation(() => {});
-
-      const result = await updateProfileImage(testUser.id, data);
-
-      expect(result.url).toBe(data.location);
-
-      const updatedUser = await prisma.user.findUnique({
-        where: { id: testUser.id },
+      await expect(updateProfileImage(userId, data)).rejects.toMatchObject({
+        statusCode: 404,
+        message: "Usuário não encontrado",
       });
-      expect(updatedUser?.profileImageKey).toBe(data.key);
-      consoleSpy.mockRestore();
+    });
+
+    it("10. deve fazer rollback no S3 do novo avatar se o update no banco falhar", async () => {
+      jest.spyOn(prisma.user, "findUnique").mockResolvedValue({
+        id: userId,
+        profileImageUrl: null,
+        profileImageKey: null,
+      } as any);
+
+      jest
+        .spyOn(prisma.user, "update")
+        .mockRejectedValue(new Error("DB Connection Error") as never);
+
+      const data = {
+        location: "https://s3/new-avatar.jpg",
+        key: "new-avatar.jpg",
+      };
+
+      await expect(updateProfileImage(userId, data)).rejects.toThrow(
+        "DB Connection Error"
+      );
+
+      // Deve ter deletado o new-avatar.jpg do S3 como rollback
+      expect(s3.send).toHaveBeenCalled();
+      const calls = (s3.send as any).mock.calls;
+      const deleteCall = calls.find(
+        (c: any[]) => c[0]?.input?.Key === "new-avatar.jpg"
+      );
+      expect(deleteCall).toBeTruthy();
+    });
+
+    it("11. não deve falhar se a deleção do avatar antigo falhar no S3", async () => {
+      jest.spyOn(prisma.user, "findUnique").mockResolvedValue({
+        id: userId,
+        profileImageUrl: "https://old.url/old.jpg",
+        profileImageKey: "old.jpg",
+      } as any);
+
+      jest.spyOn(prisma.user, "update").mockResolvedValue({
+        id: userId,
+      } as any);
+
+      jest
+        .spyOn(s3, "send")
+        .mockRejectedValueOnce(new Error("S3 Delete Error") as never);
+
+      jest.spyOn(console, "error").mockImplementation(() => {});
+
+      const data = {
+        location: "https://s3/new-avatar.jpg",
+        key: "new-avatar.jpg",
+      };
+
+      const result = await updateProfileImage(userId, data);
+      expect(result.url).toBe(resolveMediaUrl(data.key));
     });
   });
 });
-

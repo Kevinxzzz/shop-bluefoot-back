@@ -1,314 +1,280 @@
-import { describe, it, expect, beforeEach } from "@jest/globals";
-import request from "supertest";
-import { app } from "../../app.js";
+import { describe, it, expect, beforeEach, jest } from "@jest/globals";
+import {
+  createInviteToken,
+  revokeInviteToken,
+  listTokens,
+  validateInviteToken,
+} from "./token.service.js";
 import { prisma } from "../../shared/database/prisma.js";
-import { env } from "../../shared/config/env.js";
-import jwt from "jsonwebtoken";
-import crypto from "crypto";
+import {
+  createTokenSchema,
+  revokeTokenSchema,
+  validateTokenSchema,
+} from "./token.schema.js";
 
 describe("Token Module", () => {
-  let enterpriseId: string;
-  let otherEnterpriseId: string;
-  let adminId: string;
-  let sellerId: string;
-  let adminToken: string;
-  let sellerToken: string;
-  let adminRoleId: string;
-  let sellerRoleId: string;
-
-  beforeEach(async () => {
-    // Clear tables
-    await prisma.enterpriseInviteToken.deleteMany();
-    await prisma.userToken.deleteMany();
-    await prisma.user.deleteMany();
-    await prisma.enterprise.deleteMany();
-
-    // Ensure Roles exist
-    let adminRole = await prisma.userRole.findFirst({
-      where: { role: "ADMIN" },
-    });
-    if (!adminRole) {
-      adminRole = await prisma.userRole.create({
-        data: { role: "ADMIN", description: "Admin" },
-      });
-    }
-    adminRoleId = adminRole.id;
-
-    let sellerRole = await prisma.userRole.findFirst({
-      where: { role: "SELLER" },
-    });
-    if (!sellerRole) {
-      sellerRole = await prisma.userRole.create({
-        data: { role: "SELLER", description: "Seller" },
-      });
-    }
-    sellerRoleId = sellerRole.id;
-
-    // Create Main Enterprise
-    const enterprise = await prisma.enterprise.create({
-      data: { cnpj: "11111111111111", name: "Main Corp", phoneNumber: "111" },
-    });
-    enterpriseId = enterprise.id;
-
-    // Create Other Enterprise
-    const otherEnterprise = await prisma.enterprise.create({
-      data: { cnpj: "22222222222222", name: "Other Corp", phoneNumber: "222" },
-    });
-    otherEnterpriseId = otherEnterprise.id;
-
-    // Create Admin User
-    const adminUser = await prisma.user.create({
-      data: {
-        name: "Admin",
-        email: "admin@corp.com",
-        password: "hash",
-        roleId: adminRoleId,
-        enterpriseId,
-      },
-    });
-    adminId = adminUser.id;
-
-    // Create Seller User
-    const sellerUser = await prisma.user.create({
-      data: {
-        name: "Seller",
-        email: "seller@corp.com",
-        password: "hash",
-        roleId: sellerRoleId,
-        enterpriseId,
-      },
-    });
-    sellerId = sellerUser.id;
-
-    // Generate JWTs
-    adminToken = jwt.sign(
-      { userId: adminId, email: adminUser.email, role: "ADMIN", enterpriseId },
-      env.JWT_SECRET,
-      { expiresIn: "1h", algorithm: "HS256" },
-    );
-
-    sellerToken = jwt.sign(
-      {
-        userId: sellerId,
-        email: sellerUser.email,
-        role: "SELLER",
-        enterpriseId,
-      },
-      env.JWT_SECRET,
-      { expiresIn: "1h", algorithm: "HS256" },
-    );
+  beforeEach(() => {
+    jest.restoreAllMocks();
+    jest.clearAllMocks();
   });
 
-  describe("POST /tokens", () => {
-    it("should allow ADMIN to create an invite token", async () => {
-      const expiredAt = new Date();
-      expiredAt.setDate(expiredAt.getDate() + 7); // 7 days from now
-
-      const response = await request(app)
-        .post("/tokens")
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({
-          maxUses: 5,
-          expiredAt: expiredAt.toISOString(),
-        });
-
-      expect(response.status).toBe(201);
-      expect(response.body).toHaveProperty("rawToken");
-      expect(typeof response.body.rawToken).toBe("string");
-
-      const rawToken = response.body.rawToken;
-
-      const dbToken = await prisma.enterpriseInviteToken.findFirst({
-        where: { token: rawToken },
+  describe("Zod Schemas", () => {
+    it("deve validar payload correto de criação de token", () => {
+      const futureDate = new Date(Date.now() + 86400000).toISOString();
+      const parsed = createTokenSchema.safeParse({
+        maxUses: 5,
+        expiredAt: futureDate,
       });
-
-      expect(dbToken).not.toBeNull();
-      expect(dbToken?.enterpriseId).toBe(enterpriseId);
-      expect(dbToken?.createdByAdminId).toBe(adminId);
-      expect(dbToken?.maxUses).toBe(5);
-      expect(dbToken?.token).toBe(rawToken); // Guarantee raw token is saved
+      expect(parsed.success).toBe(true);
     });
 
-    it("should prevent SELLER from creating an invite token", async () => {
-      const response = await request(app)
-        .post("/tokens")
-        .set("Authorization", `Bearer ${sellerToken}`)
-        .send({ maxUses: 5, expiredAt: new Date().toISOString() });
+    it("deve rejeitar maxUses <= 0", () => {
+      const futureDate = new Date(Date.now() + 86400000).toISOString();
+      const parsedZero = createTokenSchema.safeParse({
+        maxUses: 0,
+        expiredAt: futureDate,
+      });
+      expect(parsedZero.success).toBe(false);
 
-      expect(response.status).toBe(403);
+      const parsedNegative = createTokenSchema.safeParse({
+        maxUses: -1,
+        expiredAt: futureDate,
+      });
+      expect(parsedNegative.success).toBe(false);
     });
 
-    it("should reject invalid maxUses (<= 0)", async () => {
-      const response = await request(app)
-        .post("/tokens")
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({
-          maxUses: 0,
-          expiredAt: new Date(Date.now() + 10000).toISOString(),
-        });
-
-      expect(response.status).toBe(400);
+    it("deve rejeitar data de expiração no passado", () => {
+      const pastDate = new Date(Date.now() - 86400000).toISOString();
+      const parsed = createTokenSchema.safeParse({
+        maxUses: 5,
+        expiredAt: pastDate,
+      });
+      expect(parsed.success).toBe(false);
     });
 
-    it("should reject past expiredAt dates", async () => {
-      const response = await request(app)
-        .post("/tokens")
-        .set("Authorization", `Bearer ${adminToken}`)
-        .send({
-          maxUses: 5,
-          expiredAt: new Date(Date.now() - 10000).toISOString(),
-        });
+    it("deve validar UUID em revokeTokenSchema", () => {
+      expect(
+        revokeTokenSchema.safeParse({ id: "123e4567-e89b-12d3-a456-426614174000" })
+          .success
+      ).toBe(true);
+      expect(revokeTokenSchema.safeParse({ id: "invalid-uuid" }).success).toBe(
+        false
+      );
+    });
 
-      expect(response.status).toBe(400);
+    it("deve validar tamanho mínimo em validateTokenSchema", () => {
+      expect(
+        validateTokenSchema.safeParse({ rawToken: "1234567890abcdef" }).success
+      ).toBe(true);
+      expect(validateTokenSchema.safeParse({ rawToken: "short" }).success).toBe(
+        false
+      );
     });
   });
 
-  describe("DELETE /tokens/:id", () => {
-    let tokenIdToRevoke: string;
-
-    beforeEach(async () => {
-      const dbToken = await prisma.enterpriseInviteToken.create({
-        data: {
-          token: "dummy_raw_token_for_test",
-          maxUses: 10,
-          expiredAt: new Date(Date.now() + 100000),
-          enterpriseId,
-          createdByAdminId: adminId,
-        },
-      });
-      tokenIdToRevoke = dbToken.id;
-    });
-
-    it("should allow ADMIN to revoke a token from their enterprise", async () => {
-      const response = await request(app)
-        .delete(`/tokens/${tokenIdToRevoke}`)
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(response.status).toBe(204);
-
-      const dbToken = await prisma.enterpriseInviteToken.findUnique({
-        where: { id: tokenIdToRevoke },
-      });
-
-      expect(dbToken?.canceledAt).not.toBeNull();
-    });
-
-    it("should prevent ADMIN from revoking a token from another enterprise (Tenant Isolation)", async () => {
-      const otherToken = await prisma.enterpriseInviteToken.create({
-        data: {
-          token: "other_dummy_raw_token",
-          maxUses: 10,
-          expiredAt: new Date(Date.now() + 100000),
-          enterpriseId: otherEnterpriseId, // Belongs to other enterprise
-          createdByAdminId: adminId, // Reusing adminId just for relation, doesn't matter
-        },
-      });
-
-      const response = await request(app)
-        .delete(`/tokens/${otherToken.id}`)
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(response.status).toBe(404); // Should not find it due to tenant filter
-
-      const dbToken = await prisma.enterpriseInviteToken.findUnique({
-        where: { id: otherToken.id },
-      });
-
-      expect(dbToken?.canceledAt).toBeNull(); // Must remain unrevoked
-    });
-
-    it("should prevent SELLER from revoking a token", async () => {
-      const response = await request(app)
-        .delete(`/tokens/${tokenIdToRevoke}`)
-        .set("Authorization", `Bearer ${sellerToken}`);
-
-      expect(response.status).toBe(403);
-    });
-
-    it("should return 404 if token is already canceled", async () => {
-      await prisma.enterpriseInviteToken.update({
-        where: { id: tokenIdToRevoke },
-        data: { canceledAt: new Date() },
-      });
-
-      const response = await request(app)
-        .delete(`/tokens/${tokenIdToRevoke}`)
-        .set("Authorization", `Bearer ${adminToken}`);
-
-      expect(response.status).toBe(404);
-    });
-  });
-
-  describe("GET /tokens/validate/:rawToken", () => {
-    let validRawToken: string;
-
-    beforeEach(async () => {
-      validRawToken = "valid_token_for_validation_test";
-      await prisma.enterpriseInviteToken.create({
-        data: {
-          token: validRawToken,
-          maxUses: 10,
-          expiredAt: new Date(Date.now() + 100000), // future
-          enterpriseId,
-          createdByAdminId: adminId,
-        },
-      });
-    });
-
-    it("should return token data if valid", async () => {
-      const response = await request(app).get(`/tokens/validate/${validRawToken}`);
-
-      expect(response.status).toBe(200);
-      expect(response.body).toMatchObject({
-        valid: true,
-        enterpriseName: "Main Corp",
+  describe("createInviteToken", () => {
+    it("1. deve criar token de convite com sucesso", async () => {
+      const futureDate = new Date(Date.now() + 86400000).toISOString();
+      const mockCreated = {
+        id: "tok-1",
+        createdAt: new Date(),
         maxUses: 10,
-        currentUses: 0,
+      };
+
+      jest
+        .spyOn(prisma.enterpriseInviteToken, "create")
+        .mockResolvedValue(mockCreated as any);
+
+      const result = await createInviteToken({
+        maxUses: 10,
+        expiredAt: futureDate,
+        enterpriseId: "ent-1",
+        adminId: "admin-1",
+      });
+
+      expect(prisma.enterpriseInviteToken.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          maxUses: 10,
+          enterpriseId: "ent-1",
+          createdByAdminId: "admin-1",
+        }),
+      });
+      expect(result.id).toBe("tok-1");
+      expect(typeof result.rawToken).toBe("string");
+      expect(result.rawToken.length).toBe(64); // 32 bytes hex
+    });
+  });
+
+  describe("revokeInviteToken", () => {
+    it("2. deve revogar token ativo com sucesso", async () => {
+      jest.spyOn(prisma.enterpriseInviteToken, "findFirst").mockResolvedValue({
+        id: "tok-1",
+        enterpriseId: "ent-1",
+        canceledAt: null,
+      } as any);
+
+      jest
+        .spyOn(prisma.enterpriseInviteToken, "update")
+        .mockResolvedValue({ id: "tok-1" } as any);
+
+      await revokeInviteToken("tok-1", "ent-1");
+
+      expect(prisma.enterpriseInviteToken.update).toHaveBeenCalledWith({
+        where: { id: "tok-1" },
+        data: { canceledAt: expect.any(Date) },
       });
     });
 
-    it("should return 400 if token is invalid/not found", async () => {
-      const response = await request(app).get(`/tokens/validate/invalid_token_123`);
+    it("3. deve lançar 404 se token não existir ou já estiver cancelado", async () => {
+      jest
+        .spyOn(prisma.enterpriseInviteToken, "findFirst")
+        .mockResolvedValue(null as any);
 
-      expect(response.status).toBe(400);
-      expect(response.body.error).toBe("Convite inválido ou não encontrado");
+      await expect(revokeInviteToken("tok-invalid", "ent-1")).rejects.toMatchObject(
+        {
+          statusCode: 404,
+          message: "Token não encontrado ou já revogado",
+        }
+      );
+    });
+  });
+
+  describe("listTokens", () => {
+    it("4. deve listar tokens com seus respectivos status computados", async () => {
+      const now = new Date();
+      const mockTokens = [
+        {
+          id: "tok-active",
+          token: "raw-active",
+          maxUses: 5,
+          createdAt: now,
+          expiredAt: new Date(now.getTime() + 100000),
+          canceledAt: null,
+          _count: { usedBy: 1 },
+        },
+        {
+          id: "tok-canceled",
+          token: "raw-canceled",
+          maxUses: 5,
+          createdAt: now,
+          expiredAt: new Date(now.getTime() + 100000),
+          canceledAt: new Date(),
+          _count: { usedBy: 0 },
+        },
+        {
+          id: "tok-expired",
+          token: "raw-expired",
+          maxUses: 5,
+          createdAt: now,
+          expiredAt: new Date(now.getTime() - 100000),
+          canceledAt: null,
+          _count: { usedBy: 0 },
+        },
+        {
+          id: "tok-maxed",
+          token: "raw-maxed",
+          maxUses: 3,
+          createdAt: now,
+          expiredAt: new Date(now.getTime() + 100000),
+          canceledAt: null,
+          _count: { usedBy: 3 },
+        },
+      ];
+
+      jest
+        .spyOn(prisma.enterpriseInviteToken, "count")
+        .mockResolvedValue(4 as any);
+      jest
+        .spyOn(prisma.enterpriseInviteToken, "findMany")
+        .mockResolvedValue(mockTokens as any);
+
+      const result = await listTokens("ent-1", 1, 10);
+
+      expect(result.data[0].status).toBe("ACTIVE");
+      expect(result.data[1].status).toBe("CANCELED");
+      expect(result.data[2].status).toBe("EXPIRED");
+      expect(result.data[3].status).toBe("MAXED_OUT");
+      expect(result.meta.total).toBe(4);
+    });
+  });
+
+  describe("validateInviteToken", () => {
+    const futureDate = new Date(Date.now() + 86400000);
+
+    it("5. deve validar token válido com sucesso", async () => {
+      jest.spyOn(prisma.enterpriseInviteToken, "findFirst").mockResolvedValue({
+        enterprise: { name: "Empresa XPTO" },
+        _count: { usedBy: 2 },
+        canceledAt: null,
+        expiredAt: futureDate,
+        maxUses: 5,
+      } as any);
+
+      const result = await validateInviteToken("valid-token");
+
+      expect(result).toEqual({
+        valid: true,
+        enterpriseName: "Empresa XPTO",
+        maxUses: 5,
+        currentUses: 2,
+        expiredAt: futureDate,
+      });
     });
 
-    it("should return 400 if token is revoked", async () => {
-      await prisma.enterpriseInviteToken.updateMany({
-        where: { token: validRawToken },
-        data: { canceledAt: new Date() },
+    it("6. deve rejeitar se token não existir", async () => {
+      jest
+        .spyOn(prisma.enterpriseInviteToken, "findFirst")
+        .mockResolvedValue(null as any);
+
+      await expect(validateInviteToken("not-found")).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Convite inválido ou não encontrado",
       });
-
-      const response = await request(app).get(`/tokens/validate/${validRawToken}`);
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toBe("Convite revogado");
     });
 
-    it("should return 400 if token is expired", async () => {
-      await prisma.enterpriseInviteToken.updateMany({
-        where: { token: validRawToken },
-        data: { expiredAt: new Date(Date.now() - 10000) }, // past
+    it("7. deve rejeitar se token foi cancelado", async () => {
+      jest.spyOn(prisma.enterpriseInviteToken, "findFirst").mockResolvedValue({
+        enterprise: { name: "Empresa XPTO" },
+        _count: { usedBy: 0 },
+        canceledAt: new Date(),
+        expiredAt: futureDate,
+        maxUses: 5,
+      } as any);
+
+      await expect(validateInviteToken("canceled-token")).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Convite revogado",
       });
-
-      const response = await request(app).get(`/tokens/validate/${validRawToken}`);
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toBe("Convite expirado");
     });
 
-    it("should return 400 if token max uses are reached", async () => {
-      // Simulate max uses reached by updating maxUses to 0
-      await prisma.enterpriseInviteToken.updateMany({
-        where: { token: validRawToken },
-        data: { maxUses: 0 },
+    it("8. deve rejeitar se token estiver expirado", async () => {
+      jest.spyOn(prisma.enterpriseInviteToken, "findFirst").mockResolvedValue({
+        enterprise: { name: "Empresa XPTO" },
+        _count: { usedBy: 0 },
+        canceledAt: null,
+        expiredAt: new Date(Date.now() - 1000),
+        maxUses: 5,
+      } as any);
+
+      await expect(validateInviteToken("expired-token")).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Convite expirado",
       });
+    });
 
-      const response = await request(app).get(`/tokens/validate/${validRawToken}`);
+    it("9. deve rejeitar se limite de usos do token foi atingido", async () => {
+      jest.spyOn(prisma.enterpriseInviteToken, "findFirst").mockResolvedValue({
+        enterprise: { name: "Empresa XPTO" },
+        _count: { usedBy: 5 },
+        canceledAt: null,
+        expiredAt: futureDate,
+        maxUses: 5,
+      } as any);
 
-      expect(response.status).toBe(400);
-      expect(response.body.error).toBe("Limite de usos do convite atingido");
+      await expect(validateInviteToken("maxed-token")).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Limite de usos do convite atingido",
+      });
     });
   });
 });

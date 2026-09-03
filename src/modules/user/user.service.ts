@@ -4,6 +4,7 @@ import { z } from "zod";
 import { DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { s3 } from "../../shared/config/s3.js";
 import { env } from "../../shared/config/env.js";
+import { resolveMediaUrl } from "../../shared/utils/resolveMediaUrl.js";
 import { deleteProductMediaFiles } from "../upload/upload.service.js";
 async function getFounderAdmin(enterpriseId: string) {
   // O verdadeiro fundador é o único usuário que entrou na empresa
@@ -38,6 +39,7 @@ export async function listUsers(enterpriseId: string) {
       name: true,
       email: true,
       profileImageUrl: true,
+      profileImageKey: true,
       role: {
         select: {
           role: true,
@@ -55,7 +57,7 @@ export async function listUsers(enterpriseId: string) {
     id: user.id,
     name: user.name,
     email: user.email,
-    profileImageUrl: user.profileImageUrl,
+    profileImageUrl: resolveMediaUrl(user.profileImageKey) ?? user.profileImageUrl,
     role: user.role.role,
     status: user.deletedAt ? "INACTIVE" : "ACTIVE",
     isFounder: user.id === founderAdmin?.id,
@@ -164,6 +166,7 @@ export async function updateProfile(userId: string, data: UpdateProfileInput) {
         name: true,
         email: true,
         profileImageUrl: true,
+        profileImageKey: true,
         contactLink: true,
         role: {
           select: {
@@ -177,7 +180,7 @@ export async function updateProfile(userId: string, data: UpdateProfileInput) {
       id: updatedUser.id,
       name: updatedUser.name,
       email: updatedUser.email,
-      profileImageUrl: updatedUser.profileImageUrl,
+      profileImageUrl: resolveMediaUrl(updatedUser.profileImageKey) ?? updatedUser.profileImageUrl,
       contactLink: updatedUser.contactLink,
       role: updatedUser.role.role,
     };
@@ -208,6 +211,7 @@ export async function getProfile(userId: string) {
       email: true,
       contactLink: true,
       profileImageUrl: true,
+      profileImageKey: true,
       role: {
         select: { role: true },
       },
@@ -223,7 +227,7 @@ export async function getProfile(userId: string) {
     name: user.name,
     email: user.email,
     contactLink: user.contactLink,
-    profileImageUrl: user.profileImageUrl,
+    profileImageUrl: resolveMediaUrl(user.profileImageKey) ?? user.profileImageUrl,
     role: user.role.role,
   };
 }
@@ -238,6 +242,7 @@ export async function getEnterpriseUsersPublic(enterpriseId: string) {
       id: true,
       name: true,
       profileImageUrl: true,
+      profileImageKey: true,
       _count: {
         select: {
           products: {
@@ -256,7 +261,7 @@ export async function getEnterpriseUsersPublic(enterpriseId: string) {
   return users.map((user) => ({
     id: user.id,
     name: user.name,
-    imageUrl: user.profileImageUrl, // Mapeado conforme solicitado
+    imageUrl: resolveMediaUrl(user.profileImageKey) ?? user.profileImageUrl,
     productsCount: user._count.products, // Mapeado conforme solicitado
   }));
 }
@@ -272,6 +277,7 @@ export async function getPublicUserById(userId: string, enterpriseId: string) {
       id: true,
       name: true,
       profileImageUrl: true,
+      profileImageKey: true,
       contactLink: true,
       products: {
         where: { deletedAt: null },
@@ -284,7 +290,7 @@ export async function getPublicUserById(userId: string, enterpriseId: string) {
           createdAt: true,
           media: {
             orderBy: { order: "asc" },
-            select: { id: true, url: true, type: true, order: true },
+            select: { id: true, url: true, key: true, type: true, order: true },
           },
           categories: {
             select: {
@@ -300,7 +306,17 @@ export async function getPublicUserById(userId: string, enterpriseId: string) {
     throw new AppError("Vendedor não encontrado", 404);
   }
 
-  return user;
+  return {
+    ...user,
+    profileImageUrl: resolveMediaUrl(user.profileImageKey) ?? user.profileImageUrl,
+    products: user.products.map((product) => ({
+      ...product,
+      media: product.media.map((m) => ({
+        ...m,
+        url: resolveMediaUrl(m.key) ?? m.url,
+      })),
+    })),
+  };
 }
 
 export async function deleteUserPermanently(
@@ -333,7 +349,7 @@ export async function deleteUserPermanently(
   try {
     if (userTarget.profileImageKey) {
       const command = new DeleteObjectCommand({
-        Bucket: env.AWS_BUCKET_NAME!,
+        Bucket: env.R2_BUCKET_NAME,
         Key: userTarget.profileImageKey,
       });
       await s3.send(command);
