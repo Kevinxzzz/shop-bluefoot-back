@@ -37,22 +37,22 @@ model UserRole {
 }
 
 model User {
-  id            String                  @id @default(uuid())
-  name          String
-  email         String                  @unique
-  password      String
+  id              String                  @id @default(uuid())
+  name            String
+  email           String                  @unique
+  password        String
   profileImageUrl String?
   profileImageKey String?
-  contactLink   String?                 @unique @map("link_contact")
-  roleId        String                  @map("role_id")
-  enterpriseId  String                  @map("enterprise_id")
-  createdAt     DateTime                @default(now()) @map("created_at")
-  deletedAt     DateTime?               @map("deleted_at")
-  createdTokens EnterpriseInviteToken[] @relation("AdminTokens")
-  products      Product[]
-  usedTokens    UserToken[]
-  enterprise    Enterprise              @relation(fields: [enterpriseId], references: [id])
-  role          UserRole                @relation(fields: [roleId], references: [id])
+  contactLink     String?                 @unique @map("link_contact")
+  roleId          String                  @map("role_id")
+  enterpriseId    String                  @map("enterprise_id")
+  createdAt       DateTime                @default(now()) @map("created_at")
+  deletedAt       DateTime?               @map("deleted_at")
+  createdTokens   EnterpriseInviteToken[] @relation("AdminTokens")
+  products        Product[]
+  usedTokens      UserToken[]
+  enterprise      Enterprise              @relation(fields: [enterpriseId], references: [id])
+  role            UserRole                @relation(fields: [roleId], references: [id])
 
   @@map("users")
 }
@@ -129,7 +129,7 @@ model ProductCategory {
 
 model ProductMedia {
   id        String    @id @default(uuid())
-  url       String
+  url       String?
   key       String
   type      MediaType
   isMain    Boolean   @default(false) @map("is_main")

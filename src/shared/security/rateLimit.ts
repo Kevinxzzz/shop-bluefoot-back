@@ -14,14 +14,14 @@ const handler = () => {
 };
 
 export const authLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minuto
-  max: 5, // Limite de 5 tentativas por IP
+  windowMs: 60 * 5000, // 5 minuto
+  max: 10, // Limite de 5 tentativas por IP
   handler,
 });
 
 export const registerLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minuto
-  max: process.env.NODE_ENV === "test" ? 1000 : 20, // Limite de 20 tentativas por IP
+  windowMs: 60 * 5000, // 5 minuto
+  max: 10, // Limite de 20 tentativas por IP
   handler,
 });
 

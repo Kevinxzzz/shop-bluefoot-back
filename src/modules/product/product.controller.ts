@@ -143,7 +143,6 @@ export const getProductByIdHandler = async (
           maxAge: 24 * 60 * 60 * 1000,
           httpOnly: true,
           sameSite: "lax",
-          secure: process.env.NODE_ENV === "production",
         });
       }
     }
@@ -206,10 +205,10 @@ export const updateProductMediaHandler = async (
     const newFiles =
       files.length > 0
         ? await processProductMediaUpload(
-            files,
-            req.user.userId,
-            req.user.enterpriseId,
-          )
+          files,
+          req.user.userId,
+          req.user.enterpriseId,
+        )
         : [];
 
     const result = await updateProductMedia(

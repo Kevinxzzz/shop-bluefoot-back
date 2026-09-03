@@ -67,7 +67,6 @@ describe("User Module", () => {
           id: "founder-id",
           name: "Fundador",
           email: "founder@corp.com",
-          profileImageUrl: null,
           profileImageKey: null,
           role: { role: "ADMIN" },
           createdAt: new Date(),
@@ -77,7 +76,6 @@ describe("User Module", () => {
           id: "seller-id",
           name: "Vendedor",
           email: "seller@corp.com",
-          profileImageUrl: null,
           profileImageKey: null,
           role: { role: "SELLER" },
           createdAt: new Date(),
@@ -202,7 +200,6 @@ describe("User Module", () => {
         id: "user-1",
         name: "Nome Novo",
         email: "novo@test.com",
-        profileImageUrl: null,
         profileImageKey: null,
         contactLink: "https://wa.me/123",
         role: { role: "SELLER" },
@@ -247,7 +244,6 @@ describe("User Module", () => {
         name: "João",
         email: "joao@test.com",
         contactLink: null,
-        profileImageUrl: null,
         profileImageKey: null,
         role: { role: "ADMIN" },
       } as any);
@@ -280,7 +276,6 @@ describe("User Module", () => {
         {
           id: "u-1",
           name: "Vendedor 1",
-          profileImageUrl: null,
           profileImageKey: null,
           _count: { products: 5 },
         },
@@ -304,7 +299,6 @@ describe("User Module", () => {
       jest.spyOn(prisma.user, "findFirst").mockResolvedValue({
         id: "seller-1",
         name: "Vendedor Show",
-        profileImageUrl: null,
         profileImageKey: null,
         contactLink: "https://contact",
         products: [
