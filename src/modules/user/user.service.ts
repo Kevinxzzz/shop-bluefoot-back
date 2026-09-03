@@ -38,7 +38,6 @@ export async function listUsers(enterpriseId: string) {
       id: true,
       name: true,
       email: true,
-      profileImageUrl: true,
       profileImageKey: true,
       role: {
         select: {
@@ -57,7 +56,7 @@ export async function listUsers(enterpriseId: string) {
     id: user.id,
     name: user.name,
     email: user.email,
-    profileImageUrl: resolveMediaUrl(user.profileImageKey) ?? user.profileImageUrl,
+    profileImageUrl: resolveMediaUrl(user.profileImageKey),
     role: user.role.role,
     status: user.deletedAt ? "INACTIVE" : "ACTIVE",
     isFounder: user.id === founderAdmin?.id,
@@ -165,7 +164,6 @@ export async function updateProfile(userId: string, data: UpdateProfileInput) {
         id: true,
         name: true,
         email: true,
-        profileImageUrl: true,
         profileImageKey: true,
         contactLink: true,
         role: {
@@ -180,7 +178,7 @@ export async function updateProfile(userId: string, data: UpdateProfileInput) {
       id: updatedUser.id,
       name: updatedUser.name,
       email: updatedUser.email,
-      profileImageUrl: resolveMediaUrl(updatedUser.profileImageKey) ?? updatedUser.profileImageUrl,
+      profileImageUrl: resolveMediaUrl(updatedUser.profileImageKey),
       contactLink: updatedUser.contactLink,
       role: updatedUser.role.role,
     };
@@ -189,7 +187,7 @@ export async function updateProfile(userId: string, data: UpdateProfileInput) {
     if (err.code === "P2002") {
       const target = err.meta?.target as string[] | undefined;
       const targetStr = JSON.stringify(err.meta || "").toLowerCase() + " " + err.message.toLowerCase();
-      
+
       if (target?.includes("email") || targetStr.includes("email")) {
         throw new AppError("E-mail já está em uso", 409);
       }
@@ -210,7 +208,6 @@ export async function getProfile(userId: string) {
       name: true,
       email: true,
       contactLink: true,
-      profileImageUrl: true,
       profileImageKey: true,
       role: {
         select: { role: true },
@@ -227,7 +224,7 @@ export async function getProfile(userId: string) {
     name: user.name,
     email: user.email,
     contactLink: user.contactLink,
-    profileImageUrl: resolveMediaUrl(user.profileImageKey) ?? user.profileImageUrl,
+    profileImageUrl: resolveMediaUrl(user.profileImageKey),
     role: user.role.role,
   };
 }
@@ -241,7 +238,6 @@ export async function getEnterpriseUsersPublic(enterpriseId: string) {
     select: {
       id: true,
       name: true,
-      profileImageUrl: true,
       profileImageKey: true,
       _count: {
         select: {
@@ -261,7 +257,7 @@ export async function getEnterpriseUsersPublic(enterpriseId: string) {
   return users.map((user) => ({
     id: user.id,
     name: user.name,
-    imageUrl: resolveMediaUrl(user.profileImageKey) ?? user.profileImageUrl,
+    imageUrl: resolveMediaUrl(user.profileImageKey),
     productsCount: user._count.products, // Mapeado conforme solicitado
   }));
 }
@@ -276,7 +272,6 @@ export async function getPublicUserById(userId: string, enterpriseId: string) {
     select: {
       id: true,
       name: true,
-      profileImageUrl: true,
       profileImageKey: true,
       contactLink: true,
       products: {
@@ -290,7 +285,7 @@ export async function getPublicUserById(userId: string, enterpriseId: string) {
           createdAt: true,
           media: {
             orderBy: { order: "asc" },
-            select: { id: true, url: true, key: true, type: true, order: true },
+            select: { id: true, key: true, type: true, order: true },
           },
           categories: {
             select: {
@@ -308,12 +303,12 @@ export async function getPublicUserById(userId: string, enterpriseId: string) {
 
   return {
     ...user,
-    profileImageUrl: resolveMediaUrl(user.profileImageKey) ?? user.profileImageUrl,
+    profileImageUrl: resolveMediaUrl(user.profileImageKey),
     products: user.products.map((product) => ({
       ...product,
       media: product.media.map((m) => ({
         ...m,
-        url: resolveMediaUrl(m.key) ?? m.url,
+        url: resolveMediaUrl(m.key),
       })),
     })),
   };
@@ -359,7 +354,7 @@ export async function deleteUserPermanently(
       await deleteProductMediaFiles(productMediaKeys);
     }
   } catch (error) {
-    console.error("Erro ao excluir arquivos do bucket S3 durante a exclusão de usuário:", error);
+    console.error("Erro ao excluir arquivos do bucket durante a exclusão de usuário:", error);
     throw new AppError("Falha ao remover arquivos associados. A exclusão do usuário foi abortada.", 500);
   }
 

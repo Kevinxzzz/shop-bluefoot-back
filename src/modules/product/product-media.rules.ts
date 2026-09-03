@@ -8,7 +8,6 @@ interface MediaRecord {
   order: number;
 }
 interface NewMediaRecord {
-  url: string;
   key: string;
   type: MediaType;
 }

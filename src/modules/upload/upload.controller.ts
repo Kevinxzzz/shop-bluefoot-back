@@ -14,16 +14,14 @@ export const postUpload = async (
     }
 
     const file = req.file as Express.Multer.File & {
-      location?: string;
       key?: string;
     };
 
-    if (!file || !file.location || !file.key) {
+    if (!file || !file.key) {
       throw new AppError("Erro ao fazer upload da imagem", 400);
     }
 
     const parsedData = uploadImageProfileSchema.parse({
-      location: file.location,
       key: file.key,
     });
 

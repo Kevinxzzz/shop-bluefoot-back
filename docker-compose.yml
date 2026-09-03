@@ -1,8 +1,8 @@
-name: martins-shop-api
+name: e-commerce-bluefoot
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: martins-shop-api
+    container_name: e-commerce-bluefoot-DB
     restart: always
 
     ports:
