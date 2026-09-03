@@ -12,7 +12,7 @@ dotenv.config({ path: envPath, quiet: process.env.NODE_ENV === "test" });
 import { z } from "zod";
 
 const envSchema = z.object({
-  API_PORT: z.coerce.number().default(3333),
+  PORT: z.coerce.number().default(3000),
   DATABASE_URL: z.string(),
   JWT_SECRET: z
     .string()
