@@ -468,7 +468,7 @@ describe("Product Module", () => {
         { name: "Atualizado", categoryIds: [catId] }
       );
 
-      expect(result.name).toBe("Atualizado");
+      expect(result!.name).toBe("Atualizado");
       expect(mockTx.productCategory.deleteMany).toHaveBeenCalledWith({
         where: { productId: "prod-1" },
       });

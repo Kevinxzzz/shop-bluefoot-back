@@ -100,8 +100,8 @@ export async function processProductMediaUpload(files: Express.Multer.File[], us
 
       // Size limits
       const fileSizeInMB = file.size / (1024 * 1024);
-      if (isImage && fileSizeInMB > 1) {
-        throw new AppError(`A imagem ${file.originalname} excede o limite de 1MB`, 400);
+      if (isImage && fileSizeInMB > 3) {
+        throw new AppError(`A imagem ${file.originalname} excede o limite de 3MB`, 400);
       }
       
       if (isVideo) {
