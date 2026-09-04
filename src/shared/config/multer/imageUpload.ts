@@ -23,7 +23,7 @@ export const imageUpload = multer({
     },
   }),
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB
+    fileSize: 3 * 1024 * 1024, // 3MB
   },
   fileFilter: (req, file, cb) => {
     if (allowedMimes.includes(file.mimetype)) {
