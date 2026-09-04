@@ -138,16 +138,16 @@ describe("Upload Service", () => {
       });
     });
 
-    it("5. deve lançar erro se o tamanho da imagem for > 1MB", async () => {
+    it("5. deve lançar erro se o tamanho da imagem for > 3MB", async () => {
       const files = [
-        createMockFile({ size: 1.5 * 1024 * 1024, mimetype: "image/jpeg", originalname: "large.jpg" }),
+        createMockFile({ size: 3.5 * 1024 * 1024, mimetype: "image/jpeg", originalname: "large.jpg" }),
       ];
 
       await expect(
         processProductMediaUpload(files, userId, enterpriseId)
       ).rejects.toMatchObject({
         statusCode: 400,
-        message: expect.stringContaining("excede o limite de 1MB"),
+        message: expect.stringContaining("excede o limite de 3MB"),
       });
     });
 
